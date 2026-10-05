@@ -1,0 +1,6 @@
+{
+  "name": "arkAI - Ultra-Fast AI Chatbot System",
+  "description": "Ultra-lightweight, sub-millisecond intent matching & Google GenAI chatbot system built for Vercel serverless deployment (CodeAlpha_AIChatbot).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>arkAI — Pure OpenRouter Orchestrator | ARK Ecosystem</title>
+  <meta name="description" content="High-speed serverless AI orchestration platform for the ARK Ecosystem, powered by pure OpenRouter free model pool with sub-2ms heuristic routing and automatic cascade failover." />
+  <meta property="og:title" content="arkAI — Pure OpenRouter Orchestrator" />
+  <meta property="og:description" content="Serverless AI orchestration platform featuring sub-2ms heuristic classification, automatic cascade failover, and multi-chat management." />
+  <meta property="og:image" content="/logo.svg" />
+  <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+  
+  <!-- Modern Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="app-container">
+    
+    <!-- ============================================================== -->
+    <!-- MULTI-CHAT SIDEBAR                                             -->
+    <!-- ============================================================== -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <a href="/" class="brand-badge">
+          <img src="/logo.svg" alt="arkAI Emblem" class="brand-logo" />
+          <div class="brand-info">
+            <span class="brand-title">arkAI</span>
+            <span class="brand-tag">OpenRouter</span>
+          </div>
+        </a>
+      </div>
+
+      <button class="btn-new-chat" onclick="createNewChat()">
+        <span>➕</span> New Conversation
+      </button>
+
+      <div class="chat-history-list" id="chat-history-list">
+        <!-- Rendered dynamically by app.js -->
+      </div>
+
+      <div class="sidebar-footer">
+        <div style="display: flex; gap: 0.5rem;">
+          <button class="btn-header" style="flex: 1; justify-content: center;" onclick="exportChatAsJSON()" title="Export active chat as JSON">
+            📥 JSON
+          </button>
+          <button class="btn-header" style="flex: 1; justify-content: center;" onclick="exportChatAsMarkdown()" title="Export active chat as Markdown">
+            📄 Markdown
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ============================================================== -->
+    <!-- MAIN CHAT WORKSPACE                                            -->
+    <!-- ============================================================== -->
+    <main id="main-content">
+      
+      <!-- Top Navigation Header -->
+      <header class="top-header glass">
+        <div class="header-left">
+          <button id="btn-mobile-menu" class="mobile-menu-btn" aria-label="Toggle menu">
+            ☰
+          </button>
+          
+          <div class="engine-pill">
+            <span class="engine-pulse"></span>
+            <span id="engine-status-text">AI Fiesta Heuristic Router (< 2ms)</span>
+          </div>
+        </div>
+
+        <div class="header-right">
+          <button class="btn-header" onclick="toggleTheme()" title="Toggle Dark/Light Mode">
+            <span id="theme-icon">☀️</span>
+          </button>
+          <button class="btn-header" onclick="openSettingsModal()" title="Orchestrator Settings">
+            ⚙️ Settings
+          </button>
+        </div>
+      </header>
+
+      <!-- Chat Feed / Stream -->
+      <div id="chat-stream">
+        <!-- Messages rendered by app.js -->
+      </div>
+
+      <!-- Floating Prompt Input Bar -->
+      <div class="input-container">
+        <div class="input-box-wrapper">
+          <textarea
+            id="chat-input"
+            class="input-box"
+            placeholder="Ask anything... Code, math, creative writing, or general knowledge (Sub-2ms routing)"
+            rows="1"
+          ></textarea>
+          <button id="btn-send" class="btn-send" onclick="handleSendMessage()" title="Send Message (Enter)">
+            ➤
+          </button>
+        </div>
+        <div class="input-caption">
+          Press <strong>Enter</strong> to send • <strong>Shift + Enter</strong> for new line • Automatic cascade failover enabled
+        </div>
+      </div>
+
+    </main>
+
+  </div>
+
+  <!-- ============================================================== -->
+  <!-- SETTINGS MODAL                                                 -->
+  <!-- ============================================================== -->
+  <div id="settings-modal" class="modal-backdrop">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title">⚙️ arkAI Orchestrator Settings</h3>
+        <button class="btn-icon-subtle" onclick="closeSettingsModal()" style="font-size: 1.25rem;">✕</button>
+      </div>
+
+      <div class="modal-body">
+        
+        <!-- API Key Override -->
+        <div class="form-group">
+          <label class="form-label" for="input-api-key">OpenRouter API Key (Optional Override)</label>
+          <input
+            type="password"
+            id="input-api-key"
+            class="form-input"
+            placeholder="sk-or-v1-... (Leave blank to use server environment key)"
+          />
+          <span style="font-size: 0.72rem; color: var(--text-muted); margin-top: 2px;">
+            Read from <code>OPENROUTER_API_KEY</code> on Vercel. You can also provide a personal key stored locally in your browser.
+          </span>
+        </div>
+
+        <!-- System Persona -->
+        <div class="form-group">
+          <label class="form-label" for="select-persona">System Persona Tuning</label>
+          <select id="select-persona" class="form-select">
+            <option value="default">Default (Balanced ARK Orchestrator)</option>
+            <option value="developer">Developer Mode (Senior Software Engineer, Clean Code)</option>
+            <option value="concise">Concise Mode (Direct, Bulleted, No fluff)</option>
+            <option value="creative">Creative Mode (Original, Evocative Writing)</option>
+            <option value="support">Support Mode (Patient, Empathetic, Step-by-Step)</option>
+            <option value="custom">Custom System Prompt</option>
+          </select>
+        </div>
+
+        <!-- Custom Prompt Container -->
+        <div id="custom-prompt-container" class="form-group" style="display: none;">
+          <label class="form-label" for="input-custom-prompt">Custom System Instructions</label>
+          <textarea
+            id="input-custom-prompt"
+            class="form-textarea"
+            rows="3"
+            placeholder="Enter custom instructions for all routed models..."
+          ></textarea>
+        </div>
+
+        <!-- Free Model Cascade Sequence Display -->
+        <div class="form-group">
+          <label class="form-label">Active Free Model Cascade Pool</label>
+          <div style="background: var(--bg-surface); padding: 0.75rem; border-radius: 8px; border: 1px solid var(--border-subtle); font-size: 0.75rem; color: var(--text-secondary); line-height: 1.6;">
+            1. 💻 <strong>Qwen 2.5 Coder 32B</strong> (Code/Programming)<br/>
+            2. 🧠 <strong>DeepSeek R1</strong> (Math/Logic/Proofs)<br/>
+            3. ✍️ <strong>Llama 3.3 70B Instruct</strong> (Creative/Writing)<br/>
+            4. ⚡ <strong>Gemini 2.0 Flash Lite</strong> (General QA Default)<br/>
+            5. 🛡️ <strong>Mistral 7B Instruct</strong> (Failover Shield)
+          </div>
+        </div>
+
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn-secondary" onclick="closeSettingsModal()">Cancel</button>
+        <button class="btn-primary" onclick="handleSaveSettings()">Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

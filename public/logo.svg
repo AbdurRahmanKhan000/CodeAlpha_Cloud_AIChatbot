@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <defs>
+    <linearGradient id="arkGlow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#06b6d4" />
+      <stop offset="50%" stop-color="#3b82f6" />
+      <stop offset="100%" stop-color="#8b5cf6" />
+    </linearGradient>
+    <linearGradient id="arkCore" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0ea5e9" />
+      <stop offset="100%" stop-color="#a855f7" />
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#3b82f6" flood-opacity="0.35" />
+    </filter>
+  </defs>
+
+  <!-- Outer Angular Shield (ARK Hex-Apex) -->
+  <polygon points="50,6 90,26 90,74 50,94 10,74 10,26" 
+           fill="none" 
+           stroke="url(#arkGlow)" 
+           stroke-width="4.5" 
+           stroke-linejoin="round"
+           filter="url(#shadow)" />
+
+  <!-- Inner Chevron / Geometric 'A' Peak -->
+  <path d="M 50 20 L 76 68 L 62 68 L 50 44 L 38 68 L 24 68 Z" 
+        fill="url(#arkCore)" />
+
+  <!-- Center Floating Fusion Spark -->
+  <polygon points="50,52 56,64 50,76 44,64" 
+           fill="#ffffff" 
+           opacity="0.95" />
+
+  <!-- Orbit Accent Nodes -->
+  <circle cx="50" cy="6" r="3.5" fill="#06b6d4" />
+  <circle cx="90" cy="50" r="3" fill="#8b5cf6" />
+  <circle cx="10" cy="50" r="3" fill="#3b82f6" />
+</svg>

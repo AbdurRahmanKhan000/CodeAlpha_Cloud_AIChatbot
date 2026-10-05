@@ -1,0 +1,186 @@
+{
+  "version": "2.0.0",
+  "name": "arkAI Commercial Intent Knowledgebase",
+  "updated_at": "2026-10-02T00:00:00Z",
+  "intents": [
+    {
+      "id": "intent_pricing",
+      "intent": "pricing_plans",
+      "triggers": [
+        "what are your pricing plans",
+        "pricing",
+        "how much does it cost",
+        "pricing tiers",
+        "subscription costs",
+        "plans and pricing",
+        "what are the prices",
+        "cost per user",
+        "monthly pricing"
+      ],
+      "response": "**arkAI Pricing Plans**:\n\n- **Standard (Free)**: 50,000 queries/month, sub-millisecond pattern matching, community support.\n- **Pro ($49/month)**: 1,000,000 queries/month, priority processing, custom FAQ rules, and analytics dashboard.\n- **Enterprise (Custom)**: Unlimited queries, dedicated capacity, 99.99% uptime SLA, VPC peering, and custom model fine-tuning.\n\nAll tiers include unlimited sub-millisecond pattern resolution with zero token surcharges.",
+      "follow_up_suggestions": [
+        "Is there a free trial for Pro?",
+        "What are the API rate limits?",
+        "Talk to sales for enterprise"
+      ]
+    },
+    {
+      "id": "intent_business_hours",
+      "intent": "business_hours",
+      "triggers": [
+        "business hours",
+        "support hours",
+        "when are you open",
+        "operating hours",
+        "working hours",
+        "customer service hours",
+        "what time do you open",
+        "is support available on weekends",
+        "office hours"
+      ],
+      "response": "**Business & Support Hours**:\n\n- **Automated AI Assistance**: Available 24/7/365 with sub-millisecond response times.\n- **Human Engineering Support**: Monday – Friday, 8:00 AM – 8:00 PM EST.\n- **Enterprise Critical Escalation**: 24/7/365 dedicated on-call engineers for P1 incidents.\n- **Support Email**: `support@arkai.io` (typical reply time under 1 hour).",
+      "follow_up_suggestions": [
+        "Escalate to a human agent",
+        "View Enterprise SLA",
+        "Email support now"
+      ]
+    },
+    {
+      "id": "intent_services",
+      "intent": "services_offered",
+      "triggers": [
+        "what services do you offer",
+        "what can you do",
+        "services",
+        "what does arkai provide",
+        "core features",
+        "what are your capabilities",
+        "product overview",
+        "explain your services"
+      ],
+      "response": "**arkAI Core Services & Capabilities**:\n\n1. **Sub-Millisecond Intent Matching**: Local high-speed caching for commercial FAQs and transactional queries.\n2. **Generative Reasoning Engine**: Deep research, coding, and multi-turn workflow support via Google Gemini models.\n3. **Embeddable Web Widget**: Drop-in 4KB script for instant website customer support.\n4. **Serverless REST APIs**: High-throughput `/api/chat` and `/api/health` endpoints optimized for Vercel edge deployment.",
+      "follow_up_suggestions": [
+        "What are your pricing plans?",
+        "Security & compliance details",
+        "API integration guide"
+      ]
+    },
+    {
+      "id": "intent_refund_policy",
+      "intent": "refund_policy",
+      "triggers": [
+        "refund policy",
+        "can i get a refund",
+        "money back guarantee",
+        "how to cancel",
+        "cancel subscription",
+        "refunds",
+        "return policy",
+        "cancellation policy"
+      ],
+      "response": "**30-Day Money-Back Guarantee**:\n\nIf arkAI does not satisfy your operational or technical expectations within the first **30 days** of subscription, we will issue a full, unconditional refund. You can cancel your subscription directly from the billing portal with zero lock-in contracts.",
+      "follow_up_suggestions": [
+        "How do I cancel my plan?",
+        "Contact billing support",
+        "View pricing tiers"
+      ]
+    },
+    {
+      "id": "intent_enterprise_sla",
+      "intent": "enterprise_sla",
+      "triggers": [
+        "enterprise sla",
+        "uptime guarantee",
+        "what is your sla",
+        "service level agreement",
+        "availability guarantee",
+        "uptime percentage"
+      ],
+      "response": "**Enterprise Service Level Agreement**:\n\n- **99.99% Availability Guarantee**: Financially backed uptime commitment.\n- **Support Response Times**: Critical (P1) incidents under 15 minutes; High priority (P2) under 2 hours.\n- **High Availability**: Multi-region active-active deployment across global cloud edge clusters.",
+      "follow_up_suggestions": [
+        "Request Enterprise SLA contract",
+        "Security & compliance details",
+        "Contact sales"
+      ]
+    },
+    {
+      "id": "intent_security_compliance",
+      "intent": "security_compliance",
+      "triggers": [
+        "is my data safe",
+        "security compliance",
+        "are you soc2 compliant",
+        "gdpr compliance",
+        "hipaa",
+        "encryption",
+        "data privacy",
+        "data security policy"
+      ],
+      "response": "**Security & Compliance Architecture**:\n\n- **Zero Training Guarantee**: Your proprietary queries and documents are never used to train foundation models.\n- **Enterprise Encryption**: TLS 1.3 in-transit and AES-256 at-rest.\n- **Audited Standards**: SOC 2 Type II certified, GDPR compliant, and ISO/IEC 27001 audited.\n- **Data Isolation**: Multi-tenant isolation with optional single-tenant dedicated deployments for enterprise.",
+      "follow_up_suggestions": [
+        "Download SOC 2 compliance summary",
+        "Read privacy policy",
+        "Enterprise dedicated VPC"
+      ]
+    },
+    {
+      "id": "intent_api_limits",
+      "intent": "api_limits",
+      "triggers": [
+        "api limits",
+        "rate limits",
+        "what are the rate limits",
+        "how many requests per minute",
+        "api quotas",
+        "request limits",
+        "concurrency limits"
+      ],
+      "response": "**API Rate Limits & Thresholds**:\n\n- **Pattern Matcher Engine**: Up to `2,500 req/min` per API key.\n- **Generative AI Queries**: Up to `600 req/min` with burst allowances up to 100 concurrent requests.\n- **Headers**: Standard response headers include `X-RateLimit-Limit` and `X-RateLimit-Remaining`.",
+      "follow_up_suggestions": [
+        "View API documentation",
+        "Enterprise custom limits",
+        "Pricing tiers"
+      ]
+    },
+    {
+      "id": "intent_human_agent",
+      "intent": "human_escalation",
+      "triggers": [
+        "talk to a human",
+        "speak with a person",
+        "human agent",
+        "customer service rep",
+        "transfer me to an agent",
+        "i need a real person",
+        "operator",
+        "representative"
+      ],
+      "response": "I would be glad to connect you with an engineering specialist!\n\nPlease provide your email address and a brief summary of your question, or email our support desk directly at **support@arkai.io**.",
+      "follow_up_suggestions": [
+        "Email support now",
+        "Check business hours",
+        "Search documentation"
+      ]
+    },
+    {
+      "id": "intent_greetings",
+      "intent": "greeting",
+      "triggers": [
+        "hello",
+        "hi",
+        "hey",
+        "greetings",
+        "good morning",
+        "good afternoon",
+        "good evening",
+        "start"
+      ],
+      "response": "Hello! I am **arkAI**, your high-speed intelligent assistant. How can I assist you with your operations today?",
+      "follow_up_suggestions": [
+        "What are your pricing plans?",
+        "What services do you offer?",
+        "Security & compliance"
+      ]
+    }
+  ]
+}
