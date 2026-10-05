@@ -6,10 +6,11 @@
 
 export async function runFailoverResilienceTests(): Promise<{ name: string; passed: boolean; details?: string }[]> {
   const results = [];
+  const baseUrl = process.env.TEST_SERVER_URL || 'http://localhost:3000';
 
   // Test 1: Testing server endpoint with an invalid/exhausted key simulation
   try {
-    const res = await fetch('http://localhost:3000/api/chat', {
+    const res = await fetch(new URL('/api/chat', baseUrl), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -40,7 +41,7 @@ export async function runFailoverResilienceTests(): Promise<{ name: string; pass
 
   // Test 2: Standard built-in Gemini chat without key
   try {
-    const res = await fetch('http://localhost:3000/api/chat', {
+    const res = await fetch(new URL('/api/chat', baseUrl), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

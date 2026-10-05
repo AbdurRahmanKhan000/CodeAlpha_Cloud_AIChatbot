@@ -859,6 +859,23 @@ app.post('/api/chat', async (req: Request, res: Response) => {
   const userQuery = (message || '').trim();
   const currentThreshold = fuzzy_threshold || 85.0;
 
+  // Vercel Service Binding: Forward to internal codealpha_aichatbot service if bound
+  const boundChatbotUrl = process.env.CODEALPHA_AICHATBOT_URL;
+  if (boundChatbotUrl && (mode === 'ai_only' || provider === 'openrouter')) {
+    try {
+      const targetUrl = new URL('/api/chat', boundChatbotUrl);
+      const upstreamRes = await fetch(targetUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body),
+      });
+      const data = await upstreamRes.json();
+      return res.status(upstreamRes.status).json(data);
+    } catch (err: any) {
+      console.warn(`[arkAI] Internal service binding call to ${boundChatbotUrl} failed: ${err.message}. Engaging local engine.`);
+    }
+  }
+
   // Layer 1: Check Sub-1ms Local Intent Matcher (>85% similarity ratio)
   if (mode !== 'ai_only') {
     const match = matchIntent(userQuery, currentThreshold);

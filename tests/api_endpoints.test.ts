@@ -5,10 +5,11 @@
 
 export async function runApiEndpointTests(): Promise<{ name: string; passed: boolean; details?: string }[]> {
   const results = [];
+  const baseUrl = process.env.TEST_SERVER_URL || 'http://localhost:3000';
 
   // Test 1: GET /api/health
   try {
-    const res = await fetch('http://localhost:3000/api/health');
+    const res = await fetch(new URL('/api/health', baseUrl));
     const data = await res.json() as any;
     results.push({
       name: 'GET /api/health returns operational status',
@@ -21,7 +22,7 @@ export async function runApiEndpointTests(): Promise<{ name: string; passed: boo
 
   // Test 2: GET /api/patterns
   try {
-    const res = await fetch('http://localhost:3000/api/patterns');
+    const res = await fetch(new URL('/api/patterns', baseUrl));
     const data = await res.json() as any;
     results.push({
       name: 'GET /api/patterns lists knowledge base intents',
@@ -34,7 +35,7 @@ export async function runApiEndpointTests(): Promise<{ name: string; passed: boo
 
   // Test 3: POST /api/match direct sub-millisecond execution
   try {
-    const res = await fetch('http://localhost:3000/api/match', {
+    const res = await fetch(new URL('/api/match', baseUrl), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query: 'hello there', threshold: 85.0 })
@@ -51,7 +52,7 @@ export async function runApiEndpointTests(): Promise<{ name: string; passed: boo
 
   // Test 4: POST /api/benchmark verifies in-memory performance
   try {
-    const res = await fetch('http://localhost:3000/api/benchmark', {
+    const res = await fetch(new URL('/api/benchmark', baseUrl), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ iterations: 100 })
