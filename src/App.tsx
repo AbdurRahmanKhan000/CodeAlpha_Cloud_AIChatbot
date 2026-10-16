@@ -33,9 +33,14 @@ import {
   FileText,
   FileType,
   Bot,
-  ChevronDown
+  ChevronDown,
+  Square,
+  ArrowDown,
+  MoreHorizontal,
+  AlertTriangle
 } from 'lucide-react';
 import { downloadAnswerPdf, downloadAnswerDocx } from './export.ts';
+import MarkdownMessage from './Markdown.tsx';
 
 interface ChatMessage {
   id: string;
@@ -58,6 +63,7 @@ interface ChatMessage {
   totalLatencyMs?: number;
   triedModels?: string[];
   nextModel?: string | null;
+  isStreaming?: boolean;
 }
 
 interface Conversation {
@@ -100,7 +106,6 @@ export default function App() {
 
   // Sidebar & Modal states
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Settings state: Universal provider & key with no model selection required
   const [settings, setSettings] = useState<UserSettings>(() => {
@@ -151,12 +156,19 @@ export default function App() {
   const [inputQuery, setInputQuery] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
   const [feedbackState, setFeedbackState] = useState<Record<string, 'up' | 'down'>>({});
   const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
   const [downloadMenuId, setDownloadMenuId] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [statusText] = useState('Fast API Online');
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [convMenuId, setConvMenuId] = useState<string | null>(null);
+  const [streamingId, setStreamingId] = useState<string | null>(null);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const stickRef = useRef(true);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const currentConv = conversations.find(c => c.id === activeConvId) || conversations[0];
   const messages = currentConv?.messages || [];
@@ -186,10 +198,26 @@ export default function App() {
     localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
   }, [settings]);
 
-  // Auto-scroll message feed
+  // Auto-scroll message feed (only while the user is following the bottom)
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (stickRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+    }
   }, [messages, isSending]);
+
+  const handleThreadScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 140;
+    stickRef.current = nearBottom;
+    setShowScrollBtn(!nearBottom);
+  };
+
+  const scrollToBottom = () => {
+    stickRef.current = true;
+    setShowScrollBtn(false);
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
 
   // Auto-resize textarea
   useEffect(() => {
@@ -231,8 +259,15 @@ export default function App() {
     setEditingTitleId(null);
   };
 
-  const handleDeleteChat = (convId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleDeleteChat = (convId: string, e?: React.MouseEvent) => {
+    // Ask first: deletion is confirmed in a dialog, never instant.
+    if (e) e.stopPropagation();
+    setConvMenuId(null);
+    setPendingDeleteId(convId);
+  };
+
+  const performDeleteChat = (convId: string) => {
+    setPendingDeleteId(null);
     setConversations(prev => {
       const filtered = prev.filter(c => c.id !== convId);
       if (filtered.length === 0) {
@@ -280,6 +315,88 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  // Patch one message inside one conversation
+  const patchMessage = (convId: string, msgId: string, patch: Partial<ChatMessage> | ((m: ChatMessage) => Partial<ChatMessage>)) => {
+    setConversations(prev => prev.map(c => c.id === convId ? {
+      ...c,
+      messages: c.messages.map(m => m.id === msgId ? { ...m, ...(typeof patch === 'function' ? (patch as any)(m) : patch) } : m)
+    } : c));
+  };
+
+  // Stream an SSE chat/regenerate response into a placeholder message.
+  // Resolves with the final 'done' event payload.
+  const streamIntoMessage = async (convId: string, msgId: string, url: string, body: Record<string, unknown>): Promise<any> => {
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, stream: true }),
+      signal: controller.signal,
+    });
+    if (!res.ok || !res.body) throw new Error(`HTTP error ${res.status}`);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let doneData: any = null;
+    const handleEvent = (raw: string) => {
+      const line = raw.trim();
+      if (!line.startsWith('data:')) return;
+      try {
+        const ev = JSON.parse(line.slice(5));
+        if (ev.type === 'delta' && ev.content) {
+          patchMessage(convId, msgId, (m) => ({ content: m.content + ev.content }));
+        } else if (ev.type === 'meta') {
+          patchMessage(convId, msgId, {
+            modelUsed: ev.model_used, modelName: ev.model_name, modelBadge: ev.model_badge,
+            gatewayName: ev.gateway_name, source: ev.source || 'ai',
+          });
+        } else if (ev.type === 'done') {
+          doneData = ev;
+        }
+      } catch { /* partial line, wait for more */ }
+    };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buffer.indexOf('\n\n')) >= 0) {
+        handleEvent(buffer.slice(0, idx));
+        buffer = buffer.slice(idx + 2);
+      }
+    }
+    if (buffer.trim()) handleEvent(buffer);
+    return doneData;
+  };
+
+  const stopStreaming = () => {
+    abortRef.current?.abort();
+  };
+
+  const finalizeStreamedMessage = (convId: string, msgId: string, data: any, fallbackPrompt: string) => {
+    patchMessage(convId, msgId, (m) => ({
+      content: data?.response || m.content,
+      isStreaming: false,
+      source: data?.source || 'ai',
+      intent: data?.intent ?? m.intent,
+      confidence: data?.confidence ?? m.confidence,
+      latencyMs: data?.latency_ms ?? data?.total_latency_ms,
+      latencyMicros: data?.latency_micros,
+      followUpSuggestions: data?.follow_up_suggestions,
+      modelUsed: data?.model_used || m.modelUsed,
+      modelName: data?.model_name || m.modelName,
+      modelBadge: data?.model_badge || m.modelBadge,
+      gatewayName: data?.gateway_name || m.gatewayName,
+      routingTimeMs: data?.routing_time_ms,
+      totalLatencyMs: data?.total_latency_ms,
+      triedModels: data?.tried_models || m.triedModels,
+      nextModel: data?.next_model ?? null,
+      prompt: m.prompt || fallbackPrompt,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    }));
+  };
+
   const handleSendMessage = async (textToSend?: string) => {
     const query = (textToSend || inputQuery).trim();
     if (!query || isSending) return;
@@ -288,158 +405,102 @@ export default function App() {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
+    stickRef.current = true;
 
+    const convId = activeConvId;
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
       role: 'user',
       content: query,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
+    const assistantId = `assistant-${Date.now()}`;
+    const placeholder: ChatMessage = {
+      id: assistantId,
+      role: 'assistant',
+      content: '',
+      isStreaming: true,
+      prompt: query,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
 
-    // Auto title generation if first message
     setConversations(prev =>
       prev.map(c => {
-        if (c.id === activeConvId) {
+        if (c.id === convId) {
           const newTitle = c.messages.length === 0 ? (query.slice(0, 32) + (query.length > 32 ? '...' : '')) : c.title;
-          return {
-            ...c,
-            title: newTitle,
-            messages: [...c.messages, userMessage]
-          };
+          return { ...c, title: newTitle, messages: [...c.messages, userMessage, placeholder] };
         }
         return c;
       })
     );
 
     setIsSending(true);
-
+    setStreamingId(assistantId);
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: query,
-          session_id: activeConvId,
-          provider: settings.mode === 'ownkey' && settings.provider !== 'auto' ? settings.provider : undefined,
-          system_prompt: settings.customPrompt,
-          api_key_override: settings.mode === 'ownkey' ? (settings.apiKey || undefined) : undefined,
-          temperature: settings.temperature,
-          history: messages.slice(-6).map(m => ({
-            role: m.role === 'user' ? 'user' : 'model',
-            content: m.content
-          }))
-        })
+      const data = await streamIntoMessage(convId, assistantId, '/api/chat', {
+        message: query,
+        session_id: convId,
+        provider: settings.mode === 'ownkey' && settings.provider !== 'auto' ? settings.provider : undefined,
+        system_prompt: settings.customPrompt,
+        api_key_override: settings.mode === 'ownkey' ? (settings.apiKey || undefined) : undefined,
+        temperature: settings.temperature,
+        history: messages.slice(-6).map(m => ({
+          role: m.role === 'user' ? 'user' : 'model',
+          content: m.content
+        }))
       });
-
-      if (!res.ok) throw new Error(`HTTP error ${res.status}`);
-
-      const data = await res.json();
-      const assistantMessage: ChatMessage = {
-        id: `assistant-${Date.now()}`,
-        role: 'assistant',
-        content: data.response,
-        source: data.source,
-        intent: data.intent,
-        confidence: data.confidence,
-        latencyMicros: data.latency_micros,
-        latencyMs: data.latency_ms ?? data.total_latency_ms,
-        followUpSuggestions: data.follow_up_suggestions,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        prompt: query,
-        modelUsed: data.model_used,
-        modelName: data.model_name,
-        modelBadge: data.model_badge,
-        gatewayName: data.gateway_name,
-        routingTimeMs: data.routing_time_ms,
-        totalLatencyMs: data.total_latency_ms,
-        triedModels: data.tried_models || (data.model_used ? [data.model_used] : []),
-        nextModel: data.next_model,
-      };
-
-      setConversations(prev =>
-        prev.map(c => {
-          if (c.id === activeConvId) {
-            return {
-              ...c,
-              messages: [...c.messages, assistantMessage]
-            };
-          }
-          return c;
-        })
-      );
+      finalizeStreamedMessage(convId, assistantId, data, query);
     } catch (err: any) {
-      const errorMessage: ChatMessage = {
-        id: `err-${Date.now()}`,
-        role: 'assistant',
-        content: `I encountered an issue processing your request: ${err.message || 'Server connection error'}. Please try again.`,
-        source: 'error',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      };
-      setConversations(prev =>
-        prev.map(c => {
-          if (c.id === activeConvId) {
-            return {
-              ...c,
-              messages: [...c.messages, errorMessage]
-            };
-          }
-          return c;
-        })
-      );
+      const aborted = err?.name === 'AbortError';
+      patchMessage(convId, assistantId, (m) => ({
+        isStreaming: false,
+        content: m.content
+          ? (aborted ? m.content : m.content)
+          : aborted
+            ? '_Generation stopped._'
+            : `I encountered an issue processing your request: ${err.message || 'Server connection error'}. Please try again.`,
+        source: aborted ? m.source : 'error',
+      }));
     } finally {
       setIsSending(false);
+      setStreamingId(null);
+      abortRef.current = null;
     }
   };
 
   // Regenerate: same prompt, answered by the NEXT best model (never a repeat)
   const handleRegenerate = async (msg: ChatMessage) => {
     const query = (msg.prompt || '').trim();
-    if (!query || regeneratingId) return;
+    if (!query || regeneratingId || streamingId) return;
     setRegeneratingId(msg.id);
+    setStreamingId(msg.id);
+    stickRef.current = true;
+    patchMessage(activeConvId, msg.id, { content: '', isStreaming: true });
     try {
-      const res = await fetch('/api/regenerate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: query,
-          current_model: msg.modelUsed,
-          tried_models: msg.triedModels || (msg.modelUsed ? [msg.modelUsed] : []),
-          provider: settings.mode === 'ownkey' && settings.provider !== 'auto' ? settings.provider : undefined,
-          system_prompt: settings.customPrompt,
-          api_key_override: settings.mode === 'ownkey' ? (settings.apiKey || undefined) : undefined,
-          temperature: settings.temperature,
-          history: messages.slice(-6).map(m => ({
-            role: m.role === 'user' ? 'user' : 'model',
-            content: m.content
-          }))
-        })
+      const data = await streamIntoMessage(activeConvId, msg.id, '/api/regenerate', {
+        message: query,
+        current_model: msg.modelUsed,
+        tried_models: msg.triedModels || (msg.modelUsed ? [msg.modelUsed] : []),
+        provider: settings.mode === 'ownkey' && settings.provider !== 'auto' ? settings.provider : undefined,
+        system_prompt: settings.customPrompt,
+        api_key_override: settings.mode === 'ownkey' ? (settings.apiKey || undefined) : undefined,
+        temperature: settings.temperature,
+        history: messages.slice(-6).map(m => ({
+          role: m.role === 'user' ? 'user' : 'model',
+          content: m.content
+        }))
       });
-      if (!res.ok) throw new Error(`HTTP error ${res.status}`);
-      const data = await res.json();
-      setConversations(prev => prev.map(c => c.id === activeConvId ? {
-        ...c,
-        messages: c.messages.map(m => m.id === msg.id ? {
-          ...m,
-          content: data.response,
-          source: data.source,
-          intent: data.intent ?? m.intent,
-          latencyMs: data.latency_ms ?? data.total_latency_ms,
-          latencyMicros: undefined,
-          modelUsed: data.model_used,
-          modelName: data.model_name,
-          modelBadge: data.model_badge,
-          gatewayName: data.gateway_name,
-          routingTimeMs: data.routing_time_ms,
-          totalLatencyMs: data.total_latency_ms,
-          triedModels: data.tried_models || [...(m.triedModels || []), data.model_used].filter(Boolean),
-          nextModel: data.next_model,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        } : m)
-      } : c));
-    } catch (err) {
-      console.warn('Regenerate failed', err);
+      finalizeStreamedMessage(activeConvId, msg.id, data, query);
+    } catch (err: any) {
+      const aborted = err?.name === 'AbortError';
+      patchMessage(activeConvId, msg.id, (m) => ({
+        isStreaming: false,
+        content: m.content || (aborted ? '_Generation stopped._' : 'Regenerate could not reach a model just now. Please try again.'),
+      }));
     } finally {
       setRegeneratingId(null);
+      setStreamingId(null);
+      abortRef.current = null;
     }
   };
 
@@ -470,177 +531,12 @@ export default function App() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const copyCode = (codeText: string, id: string) => {
-    navigator.clipboard.writeText(codeText);
-    setCopiedCodeId(id);
-    setTimeout(() => setCopiedCodeId(null), 2000);
-  };
+  const clearAllData = () => setShowClearConfirm(true);
 
-  const clearAllData = () => {
-    if (confirm('Are you sure you want to clear all conversations and reset settings?')) {
-      localStorage.removeItem(STORAGE_KEY_SESSIONS);
-      localStorage.removeItem(STORAGE_KEY_SETTINGS);
-      window.location.reload();
-    }
-  };
-
-  // Render markdown with clean formatting, code blocks, lists
-  const renderMessageContent = (content: string, messageId: string) => {
-    const codeBlockRegex = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g;
-    const parts = [];
-    let lastIndex = 0;
-    let match;
-
-    while ((match = codeBlockRegex.exec(content)) !== null) {
-      if (match.index > lastIndex) {
-        parts.push({
-          type: 'text',
-          value: content.slice(lastIndex, match.index)
-        });
-      }
-      parts.push({
-        type: 'code',
-        language: match[1] || 'text',
-        code: match[2].trim(),
-        id: `${messageId}-${match.index}`
-      });
-      lastIndex = match.index + match[0].length;
-    }
-
-    if (lastIndex < content.length) {
-      parts.push({
-        type: 'text',
-        value: content.slice(lastIndex)
-      });
-    }
-
-    if (parts.length === 0) {
-      parts.push({ type: 'text', value: content });
-    }
-
-    return (
-      <div className={`space-y-3 ${theme === 'dark' ? 'text-zinc-200' : 'text-zinc-900 font-normal'}`}>
-        {parts.map((part, idx) => {
-          if (part.type === 'code') {
-            const isCodeCopied = copiedCodeId === part.id;
-            return (
-              <div key={idx} className={`my-3.5 rounded-xl overflow-hidden border font-mono text-xs shadow-xs ${
-                theme === 'dark' ? 'border-zinc-800 bg-[#0d0d0f]' : 'border-zinc-200 bg-zinc-50'
-              }`}>
-                <div className={`flex items-center justify-between px-3.5 py-2 border-b ${
-                  theme === 'dark' ? 'bg-zinc-900/80 border-zinc-800 text-zinc-400' : 'bg-zinc-200/70 border-zinc-200 text-zinc-700'
-                }`}>
-                  <span className="text-[11px] font-sans font-medium uppercase tracking-wider">{part.language}</span>
-                  <button
-                    onClick={() => copyCode(part.code || '', part.id || '')}
-                    className={`flex items-center gap-1 text-[11px] transition-colors ${
-                      theme === 'dark' ? 'text-zinc-400 hover:text-zinc-200' : 'text-zinc-600 hover:text-zinc-950 font-medium'
-                    }`}
-                  >
-                    {isCodeCopied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{isCodeCopied ? 'Copied' : 'Copy code'}</span>
-                  </button>
-                </div>
-                <div className={`p-3.5 overflow-x-auto leading-relaxed ${
-                  theme === 'dark' ? 'text-zinc-200' : 'text-zinc-900 font-mono font-medium'
-                }`}>
-                  <pre><code>{part.code}</code></pre>
-                </div>
-              </div>
-            );
-          }
-
-          const lines = (part.value || '').split('\n');
-          return (
-            <div key={idx} className="space-y-2 text-[15px] leading-relaxed">
-              {lines.map((line, lIdx) => {
-                const trimmed = line.trim();
-                if (!trimmed) return <div key={lIdx} className="h-1.5" />;
-
-                // Horizontal Rule
-                if (trimmed === '---' || trimmed === '***') {
-                  return <hr key={lIdx} className={`my-3 border-t ${theme === 'dark' ? 'border-zinc-800' : 'border-zinc-200'}`} />;
-                }
-
-                // Markdown Headings
-                if (trimmed.startsWith('### ')) {
-                  return (
-                    <h3 key={lIdx} className={`text-base font-bold mt-3 mb-1.5 ${theme === 'dark' ? 'text-zinc-100' : 'text-zinc-950'}`}>
-                      <span dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(trimmed.slice(4)) }} />
-                    </h3>
-                  );
-                }
-                if (trimmed.startsWith('## ')) {
-                  return (
-                    <h2 key={lIdx} className={`text-lg font-bold mt-4 mb-2 ${theme === 'dark' ? 'text-zinc-100' : 'text-zinc-950'}`}>
-                      <span dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(trimmed.slice(3)) }} />
-                    </h2>
-                  );
-                }
-                if (trimmed.startsWith('# ')) {
-                  return (
-                    <h1 key={lIdx} className={`text-xl font-bold mt-4 mb-2 ${theme === 'dark' ? 'text-zinc-100' : 'text-zinc-950'}`}>
-                      <span dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(trimmed.slice(2)) }} />
-                    </h1>
-                  );
-                }
-
-                // Blockquotes & Callouts
-                if (trimmed.startsWith('> ')) {
-                  return (
-                    <div
-                      key={lIdx}
-                      className={`my-2 px-3.5 py-2.5 rounded-r-lg border-l-4 border-amber-500 text-sm leading-relaxed ${
-                        theme === 'dark' ? 'bg-amber-500/10 text-amber-200' : 'bg-amber-50 text-amber-950 shadow-xs'
-                      }`}
-                    >
-                      <span dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(trimmed.slice(2)) }} />
-                    </div>
-                  );
-                }
-
-                // Bullet Lists
-                if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
-                  const bulletText = trimmed.slice(2);
-                  return (
-                    <div key={lIdx} className="flex items-start gap-2.5 ml-1">
-                      <span className={`mt-2 text-[6px] ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>●</span>
-                      <span dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(bulletText) }} />
-                    </div>
-                  );
-                }
-
-                // Numbered Lists
-                if (/^\d+\.\s/.test(trimmed)) {
-                  const numMatch = trimmed.match(/^(\d+\.)\s(.*)/);
-                  if (numMatch) {
-                    return (
-                      <div key={lIdx} className="flex items-start gap-2 ml-1">
-                        <span className={`font-mono text-xs font-semibold mt-0.5 ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-700'}`}>{numMatch[1]}</span>
-                        <span dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(numMatch[2]) }} />
-                      </div>
-                    );
-                  }
-                }
-
-                return (
-                  <p key={lIdx} dangerouslySetInnerHTML={{ __html: formatInlineMarkdown(line) }} />
-                );
-              })}
-            </div>
-          );
-        })}
-      </div>
-    );
-  };
-
-  const formatInlineMarkdown = (text: string) => {
-    return text
-      .replace(/\*\*(.*?)\*\*/g, `<strong class="font-bold ${theme === 'dark' ? 'text-zinc-100' : 'text-zinc-950'}">$1</strong>`)
-      .replace(/\*(.*?)\*/g, `<em class="${theme === 'dark' ? 'text-zinc-300' : 'text-zinc-700 font-medium'}">$1</em>`)
-      .replace(/`([^`]+)`/g, `<code class="font-mono text-[13px] px-1.5 py-0.5 rounded border ${
-        theme === 'dark' ? 'bg-zinc-800 text-zinc-200 border-zinc-700/60' : 'bg-zinc-100 text-zinc-900 border-zinc-300 font-semibold'
-      }">$1</code>`);
+  const performClearAll = () => {
+    localStorage.removeItem(STORAGE_KEY_SESSIONS);
+    localStorage.removeItem(STORAGE_KEY_SETTINGS);
+    window.location.reload();
   };
 
   return (
@@ -750,24 +646,36 @@ export default function App() {
                   </div>
 
                   {!isEditing && (
-                    <div className="hidden group-hover:flex items-center gap-1">
+                    <div className="relative">
                       <button
                         onClick={e => {
                           e.stopPropagation();
-                          handleRenameChat(conv.id, conv.title);
+                          setConvMenuId(convMenuId === conv.id ? null : conv.id);
                         }}
-                        className="p-1 rounded text-zinc-400 hover:text-zinc-200"
-                        title="Rename"
+                        className={`p-1 rounded text-zinc-400 hover:text-zinc-200 ${convMenuId === conv.id ? 'flex' : 'hidden group-hover:flex'}`}
+                        title="Conversation options"
                       >
-                        <Edit2 className="w-3 h-3" />
+                        <MoreHorizontal className="w-3.5 h-3.5" />
                       </button>
-                      <button
-                        onClick={e => handleDeleteChat(conv.id, e)}
-                        className="p-1 rounded text-zinc-400 hover:text-rose-400"
-                        title="Delete"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
+                      {convMenuId === conv.id && (
+                        <div
+                          onClick={e => e.stopPropagation()}
+                          className={`absolute right-0 top-6 z-40 w-40 rounded-xl border shadow-xl p-1 ${theme === 'dark' ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-zinc-200'}`}
+                        >
+                          <button
+                            onClick={() => { setConvMenuId(null); handleRenameChat(conv.id, conv.title); }}
+                            className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-xs ${theme === 'dark' ? 'hover:bg-zinc-800 text-zinc-200' : 'hover:bg-zinc-100 text-zinc-800'}`}
+                          >
+                            <Edit2 className="w-3.5 h-3.5" /> Rename
+                          </button>
+                          <button
+                            onClick={e => handleDeleteChat(conv.id, e)}
+                            className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-xs text-rose-500 ${theme === 'dark' ? 'hover:bg-zinc-800' : 'hover:bg-rose-50'}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" /> Delete chat
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -778,10 +686,7 @@ export default function App() {
           {/* Bottom Actions Footer */}
           <div className={`p-3 border-t space-y-2 ${theme === 'dark' ? 'border-zinc-800/80 bg-[#0e0e11]' : 'border-zinc-200 bg-[#f9f9fb]'}`}>
             <button
-              onClick={() => {
-                setCurrentView('settings');
-                setSettingsOpen(false);
-              }}
+              onClick={() => setCurrentView('settings')}
               className={`w-full flex items-center justify-between text-xs p-2 rounded-lg transition-colors ${
                 currentView === 'settings'
                   ? 'bg-zinc-800 text-white font-medium shadow-sm'
@@ -934,6 +839,13 @@ export default function App() {
                   <CheckCircle2 className="w-3.5 h-3.5" />
                   Settings Active
                 </span>
+                <button
+                  onClick={() => setCurrentView('chat')}
+                  className={`p-2 rounded-lg border transition-colors ${theme === 'dark' ? 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-white hover:bg-zinc-800' : 'border-zinc-200 bg-white text-zinc-500 hover:text-zinc-950 hover:bg-zinc-100'}`}
+                  title="Close settings (back to chat)"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
             </div>
 
@@ -1154,7 +1066,7 @@ export default function App() {
           /* ============================================================== */
           <>
             {/* Message Feed Container */}
-            <div className="flex-1 overflow-y-auto px-4 md:px-6">
+            <div ref={scrollRef} onScroll={handleThreadScroll} className="flex-1 overflow-y-auto px-4 md:px-6 relative">
           {messages.length === 0 ? (
             /* Empty Hero State */
             <div className="max-w-2xl mx-auto h-full flex flex-col items-center justify-center text-center py-12">
@@ -1269,9 +1181,15 @@ export default function App() {
                       </div>
 
                       <div className="flex-1 overflow-hidden space-y-3">
-                        <div className={`max-w-none text-[15px] leading-relaxed ${theme === 'dark' ? 'text-zinc-200' : 'text-zinc-900 font-normal'}`}>
-                          {renderMessageContent(msg.content, msg.id)}
-                        </div>
+                        {msg.isStreaming && !msg.content ? (
+                          <div className="flex items-center gap-1.5 py-2" aria-label="arkAI is thinking">
+                            <span className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce"></span>
+                            <span className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce [animation-delay:150ms]"></span>
+                            <span className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce [animation-delay:300ms]"></span>
+                          </div>
+                        ) : (
+                          <MarkdownMessage content={msg.content} theme={theme} streaming={!!msg.isStreaming} />
+                        )}
 
                         {msg.followUpSuggestions && msg.followUpSuggestions.length > 0 && (
                           <div className="flex flex-wrap gap-1.5 pt-1">
@@ -1301,7 +1219,7 @@ export default function App() {
                           </div>
                         )}
 
-                        <div className="flex items-center gap-3 text-xs pt-1 flex-wrap">
+                        <div className="flex items-center gap-3 text-xs pt-1 flex-wrap opacity-100 lg:opacity-0 lg:group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-150">
                           <button
                             onClick={() => copyText(msg.content, msg.id)}
                             className={`p-1 rounded transition-colors ${
@@ -1401,7 +1319,7 @@ export default function App() {
                 </div>
               ))}
 
-              {isSending && (
+              {isSending && !streamingId && (
                 <div className="flex gap-3.5 sm:gap-4 items-center">
                   <div className={`w-7 h-7 rounded-lg border flex items-center justify-center flex-shrink-0 ${
                     theme === 'dark' ? 'bg-zinc-900 border-zinc-700' : 'bg-zinc-100 border-zinc-300'
@@ -1423,6 +1341,17 @@ export default function App() {
           )}
         </div>
 
+        {/* Scroll to bottom (appears when the user scrolls up) */}
+        {currentView === 'chat' && showScrollBtn && (
+          <button
+            onClick={scrollToBottom}
+            className={`absolute bottom-32 left-1/2 -translate-x-1/2 z-20 w-8 h-8 rounded-full border shadow-lg flex items-center justify-center transition-all ${theme === 'dark' ? 'bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800' : 'bg-white border-zinc-300 text-zinc-600 hover:bg-zinc-50'}`}
+            title="Scroll to bottom"
+          >
+            <ArrowDown className="w-4 h-4" />
+          </button>
+        )}
+
         {/* Persistent Floating Input Bar */}
         <div className="w-full max-w-3xl mx-auto px-4 pb-4 pt-2">
           <form
@@ -1432,8 +1361,8 @@ export default function App() {
             }}
             className={`rounded-2xl border p-2 flex items-end gap-2 shadow-lg transition-all ${
               theme === 'dark'
-                ? 'bg-[#141417] border-zinc-800 focus-within:border-zinc-600'
-                : 'bg-white border-zinc-300 focus-within:border-zinc-400'
+                ? 'bg-[#141417] border-zinc-800 focus-within:border-indigo-500/60 focus-within:ring-2 focus-within:ring-indigo-500/20'
+                : 'bg-white border-zinc-300 focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-500/15'
             }`}
           >
             <textarea
@@ -1453,6 +1382,16 @@ export default function App() {
               }`}
             />
 
+            {streamingId ? (
+              <button
+                type="button"
+                onClick={stopStreaming}
+                className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-all ${theme === 'dark' ? 'bg-zinc-100 text-black hover:bg-white' : 'bg-zinc-900 text-white hover:bg-zinc-700'}`}
+                title="Stop generating"
+              >
+                <Square className="w-3.5 h-3.5 fill-current" />
+              </button>
+            ) : (
             <button
               type="submit"
               disabled={!inputQuery.trim() || isSending}
@@ -1467,6 +1406,7 @@ export default function App() {
             >
               <ArrowUp className="w-4 h-4 stroke-[2.5]" />
             </button>
+            )}
           </form>
 
               <p className="text-[11px] text-zinc-400 text-center mt-2">
@@ -1478,155 +1418,74 @@ export default function App() {
       </main>
 
       {/* ============================================================== */}
-      {/* QUICK SETTINGS POPUP MODAL                                     */}
+      {/* CONFIRMATION DIALOGS (delete chat / clear all)                  */}
       {/* ============================================================== */}
-      {settingsOpen && (
-        <div
-          onClick={() => setSettingsOpen(false)}
-          className="fixed inset-0 z-[99999] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
-        >
+      {pendingDeleteId && (
+        <div className="fixed inset-0 z-[99999] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setPendingDeleteId(null)}>
           <div
             onClick={e => e.stopPropagation()}
-            className={`w-full max-w-md rounded-2xl border p-5 shadow-2xl space-y-4 ${
-              theme === 'dark' ? 'bg-[#121215] border-zinc-800 text-zinc-100' : 'bg-white border-zinc-200 text-zinc-900'
-            }`}
+            className={`w-full max-w-sm rounded-2xl border p-5 shadow-2xl ${theme === 'dark' ? 'bg-[#121215] border-zinc-800 text-zinc-100' : 'bg-white border-zinc-200 text-zinc-900'}`}
+            role="alertdialog" aria-modal="true" aria-label="Delete chat confirmation"
           >
-            <div className={`flex items-center justify-between border-b pb-3 ${theme === 'dark' ? 'border-zinc-800' : 'border-zinc-200'}`}>
-              <h3 className={`font-semibold text-sm ${theme === 'dark' ? 'text-zinc-100' : 'text-zinc-900'}`}>arkAI Settings</h3>
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center flex-shrink-0">
+                <AlertTriangle className="w-4.5 h-4.5 text-rose-500" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-sm">Are you sure you want to delete this chat?</h3>
+                <p className={`text-xs mt-1 leading-relaxed ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                  "{conversations.find(c => c.id === pendingDeleteId)?.title || 'This conversation'}" will be permanently deleted. This action cannot be undone.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-5">
               <button
-                onClick={() => setSettingsOpen(false)}
-                className={`p-1 rounded transition-colors ${theme === 'dark' ? 'text-zinc-400 hover:text-zinc-200' : 'text-zinc-500 hover:text-zinc-900'}`}
+                onClick={() => setPendingDeleteId(null)}
+                className={`px-3.5 py-1.5 rounded-lg border text-xs font-medium transition-colors ${theme === 'dark' ? 'border-zinc-700 text-zinc-200 hover:bg-zinc-800' : 'border-zinc-300 text-zinc-700 hover:bg-zinc-100'}`}
               >
-                <X className="w-4 h-4" />
+                Cancel
+              </button>
+              <button
+                onClick={() => performDeleteChat(pendingDeleteId)}
+                className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-medium transition-colors"
+              >
+                Delete chat
               </button>
             </div>
+          </div>
+        </div>
+      )}
 
-            <div className="space-y-3.5 text-xs">
-              <div className="space-y-1">
-                <label className={`font-medium ${theme === 'dark' ? 'text-zinc-300' : 'text-zinc-700'}`}>AI Source</label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button onClick={() => setSettings(st => ({ ...st, mode: 'arkai' }))} className={`px-3 py-2 rounded-lg border font-medium ${settings.mode === 'arkai' ? 'border-indigo-500 bg-indigo-500/10' : theme === 'dark' ? 'border-zinc-800' : 'border-zinc-300'}`}>arkAI Models (Free)</button>
-                  <button onClick={() => setSettings(st => ({ ...st, mode: 'ownkey' }))} className={`px-3 py-2 rounded-lg border font-medium ${settings.mode === 'ownkey' ? 'border-indigo-500 bg-indigo-500/10' : theme === 'dark' ? 'border-zinc-800' : 'border-zinc-300'}`}>My Own API Key</button>
-                </div>
-                <span className={`text-[10px] block ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>
-                  {settings.mode === 'arkai' ? 'Free orchestrated models - no key needed. arkAI picks the best model per question.' : 'Only models from your own API account will be used.'}
-                </span>
+      {showClearConfirm && (
+        <div className="fixed inset-0 z-[99999] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setShowClearConfirm(false)}>
+          <div
+            onClick={e => e.stopPropagation()}
+            className={`w-full max-w-sm rounded-2xl border p-5 shadow-2xl ${theme === 'dark' ? 'bg-[#121215] border-zinc-800 text-zinc-100' : 'bg-white border-zinc-200 text-zinc-900'}`}
+            role="alertdialog" aria-modal="true" aria-label="Clear all data confirmation"
+          >
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center flex-shrink-0">
+                <AlertTriangle className="w-4.5 h-4.5 text-rose-500" />
               </div>
-
-              {settings.mode === 'ownkey' && (<>
-              <div className="space-y-1">
-                <label className={`font-medium ${theme === 'dark' ? 'text-zinc-300' : 'text-zinc-700'}`}>Provider Selection</label>
-                <select
-                  value={settings.provider}
-                  onChange={e => setSettings(s => ({ ...s, provider: e.target.value as any }))}
-                  className={`w-full rounded-lg px-2.5 py-2 text-xs outline-none border ${
-                    theme === 'dark' ? 'bg-zinc-900 border-zinc-800 text-zinc-200 focus:border-indigo-500' : 'bg-zinc-50 border-zinc-300 text-zinc-900 focus:border-indigo-600'
-                  }`}
-                >
-                  <option value="auto">Auto-Detect Provider (Recommended)</option>
-                  <option value="openai">OpenAI ChatGPT</option>
-                  <option value="claude">Anthropic Claude</option>
-                  <option value="gemini">Google Gemini</option>
-                  <option value="grok">xAI Grok</option>
-                  <option value="deepseek">DeepSeek</option>
-                  <option value="meta">Meta LLaMA</option>
-                  <option value="qwen">Alibaba Qwen</option>
-                  <option value="openrouter">OpenRouter</option>
-                </select>
-              </div>
-
-              <div className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <label className={`font-medium ${theme === 'dark' ? 'text-zinc-300' : 'text-zinc-700'}`}>
-                    Your API Key
-                  </label>
-                  <span className="text-[10px] font-mono text-emerald-500 font-semibold">
-                    {settings.apiKey ? 'Key Configured' : 'No key yet'}
-                  </span>
-                </div>
-                <input
-                  type="password"
-                  placeholder="Paste any key (sk-..., AIzaSy..., xai-..., sk-ant-..., gsk_...)"
-                  value={settings.apiKey}
-                  onChange={e => setSettings(s => ({ ...s, apiKey: e.target.value }))}
-                  className={`w-full rounded-lg px-3 py-2 text-xs font-mono outline-none border ${
-                    theme === 'dark' ? 'bg-zinc-900 border-zinc-800 text-zinc-200 focus:border-indigo-500' : 'bg-zinc-50 border-zinc-300 text-zinc-900 focus:border-indigo-600'
-                  }`}
-                />
-                <span className={`text-[10px] block ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>
-                  Stored only in this browser. Used only with the provider above - arkAI's free models are off in this mode.
-                </span>
-              </div>
-              </>)}
-
-              <div className="space-y-1">
-                <label className={`font-medium ${theme === 'dark' ? 'text-zinc-300' : 'text-zinc-700'}`}>System Persona Preset</label>
-                <select
-                  value={settings.systemPromptPreset}
-                  onChange={e => {
-                    const preset = e.target.value as any;
-                    setSettings(s => ({
-                      ...s,
-                      systemPromptPreset: preset,
-                      customPrompt: SYSTEM_PRESETS[preset] || s.customPrompt
-                    }));
-                  }}
-                  className={`w-full rounded-lg px-3 py-2 text-xs outline-none border ${
-                    theme === 'dark' ? 'bg-zinc-900 border-zinc-800 text-zinc-200 focus:border-indigo-500' : 'bg-zinc-50 border-zinc-300 text-zinc-900 focus:border-indigo-600'
-                  }`}
-                >
-                  <option value="concise">Concise & Structured</option>
-                  <option value="developer">Developer Mode</option>
-                  <option value="support">Customer Support</option>
-                </select>
-              </div>
-
-              <div className="space-y-1">
-                <label className={`font-medium ${theme === 'dark' ? 'text-zinc-300' : 'text-zinc-700'}`}>Custom System Instruction</label>
-                <textarea
-                  rows={3}
-                  value={settings.customPrompt}
-                  onChange={e => setSettings(s => ({ ...s, customPrompt: e.target.value }))}
-                  className={`w-full rounded-lg px-3 py-2 text-xs outline-none focus:border-indigo-500 resize-none border ${
-                    theme === 'dark' ? 'bg-zinc-900 border-zinc-800 text-zinc-200' : 'bg-zinc-50 border-zinc-300 text-zinc-900'
-                  }`}
-                />
-              </div>
-
-              <div className="space-y-1">
-                <div className="flex justify-between items-center">
-                  <label className={`font-medium ${theme === 'dark' ? 'text-zinc-300' : 'text-zinc-700'}`}>Temperature (Creativity)</label>
-                  <span className="font-mono text-zinc-400">{settings.temperature}</span>
-                </div>
-                <input
-                  type="range"
-                  min="0.0"
-                  max="1.0"
-                  step="0.05"
-                  value={settings.temperature}
-                  onChange={e => setSettings(s => ({ ...s, temperature: parseFloat(e.target.value) }))}
-                  className="w-full accent-indigo-500"
-                />
-              </div>
-
-              <div className={`pt-2 border-t ${theme === 'dark' ? 'border-zinc-800' : 'border-zinc-200'}`}>
-                <button
-                  onClick={clearAllData}
-                  className="w-full py-2 px-3 rounded-lg border border-rose-900/60 bg-rose-950/20 text-rose-500 hover:bg-rose-950/40 transition-colors font-medium text-xs"
-                >
-                  Clear All Data
-                </button>
+              <div>
+                <h3 className="font-semibold text-sm">Clear all conversations and reset settings?</h3>
+                <p className={`text-xs mt-1 leading-relaxed ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                  Every chat and your saved settings will be removed from this browser. This action cannot be undone.
+                </p>
               </div>
             </div>
-
-            <div className={`flex justify-end pt-2 border-t ${theme === 'dark' ? 'border-zinc-800' : 'border-zinc-200'}`}>
+            <div className="flex justify-end gap-2 mt-5">
               <button
-                onClick={() => setSettingsOpen(false)}
-                className={`px-4 py-2 rounded-lg font-semibold text-xs transition-colors ${
-                  theme === 'dark' ? 'bg-white text-black hover:bg-zinc-200' : 'bg-zinc-900 text-white hover:bg-black'
-                }`}
+                onClick={() => setShowClearConfirm(false)}
+                className={`px-3.5 py-1.5 rounded-lg border text-xs font-medium transition-colors ${theme === 'dark' ? 'border-zinc-700 text-zinc-200 hover:bg-zinc-800' : 'border-zinc-300 text-zinc-700 hover:bg-zinc-100'}`}
               >
-                Done
+                Cancel
+              </button>
+              <button
+                onClick={performClearAll}
+                className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-medium transition-colors"
+              >
+                Clear everything
               </button>
             </div>
           </div>
