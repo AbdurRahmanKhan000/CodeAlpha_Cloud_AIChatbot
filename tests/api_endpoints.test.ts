@@ -13,7 +13,7 @@ export async function runApiEndpointTests(): Promise<{ name: string; passed: boo
     const data = await res.json() as any;
     results.push({
       name: 'GET /api/health returns operational status',
-      passed: res.status === 200 && data.status === 'operational' && data.engine === 'arkAI Sub-1ms Hybrid',
+      passed: res.status === 200 && data.status === 'operational' && data.engine === 'arkAI Orchestrated Chatbot',
       details: `Status: ${data.status}, Uptime: ${data.uptime?.toFixed(1)}s`
     });
   } catch (e: any) {

@@ -1,7 +1,8 @@
 /**
  * arkAI Test Suite: Failover Resilience & Error Recovery
  * Validates that bad custom keys (401 invalid key, 429 credit exhausted as in user screenshot)
- * never crash or show raw JSON errors, but instead gracefully engage built-in Gemini failover.
+ * never crash or show raw JSON errors: Own-Key failures return a graceful
+ * arkAI message, and zero-key chat runs on the free orchestrator.
  */
 
 export async function runFailoverResilienceTests(): Promise<{ name: string; passed: boolean; details?: string }[]> {
@@ -23,23 +24,23 @@ export async function runFailoverResilienceTests(): Promise<{ name: string; pass
 
     const data = await res.json() as any;
     // Should NOT return raw OpenAI 401 error or crash; should return failover message and valid answer
-    const hasFailover = (data.response && (data.response.includes('Failover') || data.response.includes('Gemini') || data.response.includes('4'))) || data.source === 'ai';
+    const hasFailover = Boolean(data.response && data.response.length > 10) && data.mode === 'own_key';
     const isNotRawJsonCrash = !data.response.includes('"code": "invalid_api_key"');
 
     results.push({
-      name: 'Resilient Failover on 401 Invalid Custom Key',
+      name: 'Graceful handling of 401 invalid Own-Key (no crash, no raw error)',
       passed: hasFailover && isNotRawJsonCrash,
       details: `Response delivered safely without raw JSON dump. Source: ${data.source || data.provider}`
     });
   } catch (err: any) {
     results.push({
-      name: 'Resilient Failover on 401 Invalid Custom Key',
+      name: 'Graceful handling of 401 invalid Own-Key (no crash, no raw error)',
       passed: false,
       details: `Network error: ${err.message}`
     });
   }
 
-  // Test 2: Standard built-in Gemini chat without key
+  // Test 2: Free orchestrated chat without any key
   try {
     const res = await fetch(new URL('/api/chat', baseUrl), {
       method: 'POST',
@@ -51,16 +52,16 @@ export async function runFailoverResilienceTests(): Promise<{ name: string; pass
     });
 
     const data = await res.json() as any;
-    const hasContent = data.response && data.response.length > 20;
+    const hasContent = data.response && data.response.length > 20 && Boolean(data.model_used);
 
     results.push({
-      name: 'Built-in Gemini Chat Execution (Zero-Key Required)',
+      name: 'Free Orchestrated Chat Execution (Zero-Key Required)',
       passed: hasContent && data.source === 'ai',
-      details: `Generated ${data.response?.length || 0} chars (Latency: ${data.latency_ms}ms, Provider: ${data.provider})`
+      details: `Generated ${data.response?.length || 0} chars (Latency: ${data.latency_ms}ms, Model: ${data.model_used})`
     });
   } catch (err: any) {
     results.push({
-      name: 'Built-in Gemini Chat Execution (Zero-Key Required)',
+      name: 'Free Orchestrated Chat Execution (Zero-Key Required)',
       passed: false,
       details: `Error: ${err.message}`
     });

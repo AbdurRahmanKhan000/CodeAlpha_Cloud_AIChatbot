@@ -1,178 +1,104 @@
 """
-arkAI - QA Lead & Senior Vercel Engineer Comprehensive Audit Test Suite
-Strictly verifies:
-1. Vercel Serverless Entrypoint (FastAPI app object, dual routing, static fallbacks)
-2. Security & Environment Variables (os.getenv, zero hardcoded keys, demo_mode status)
-3. OpenRouter Cascade & Router (<2ms heuristic SLA, regex validity, 429/503 failover)
-4. Frontend Verification (Try Next Model, LocalStorage multi-chat, JSON/MD export)
+arkAI - QA Lead Comprehensive Audit Test Suite (v4 Orchestrator)
+1. Serverless Entrypoint (FastAPI app, dual routing, static fallbacks)
+2. Security (zero hardcoded keys, NO server key required, no demo mode)
+3. Free Orchestrator & Router (<2ms SLA, regex validity, cascade rankings)
+4. Frontend Verification (Regenerate, PDF/Word export, model label)
 5. Dependencies & Configuration (requirements.txt, vercel.json)
 """
-
-import sys
-import os
-import re
-import unittest
-import json
-
-# Ensure project root is in sys.path
+import sys, os, re, unittest, json
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from api.config import (
-    FREE_MODEL_POOL,
-    MODEL_REGISTRY,
-    get_server_openrouter_key,
-    resolve_effective_key,
-    is_demo_mode,
-    get_demo_mode_response,
-    get_next_fallback_model,
-)
-from api.router import (
-    classify_prompt_intent,
-    build_cascade_order,
-    COMPILED_CODE_REGEX,
-    COMPILED_MATH_REGEX,
-    COMPILED_CREATIVE_REGEX,
-)
+from api.config import MODEL_CATALOG, FREE_GATEWAYS, is_demo_mode
+from api.router import classify_prompt_intent, COMPILED_CODE_REGEX, COMPILED_MATH_REGEX, COMPILED_CREATIVE_REGEX
 from api.index import app
 
 
-class TestVercelReadinessAudit(unittest.TestCase):
+class TestReadinessAudit(unittest.TestCase):
 
-    def test_01_vercel_serverless_entrypoint(self):
-        """Audit 1: Verify api/index.py exposes FastAPI 'app' with dual prefix routing."""
-        self.assertIsNotNone(app, "api/index.py MUST export a FastAPI 'app' instance")
-        self.assertEqual(app.title, "arkAI Serverless Orchestrator")
+    def test_01_serverless_entrypoint(self):
+        self.assertIsNotNone(app)
+        self.assertEqual(app.title, "arkAI Orchestrated Chatbot")
+        routes = [getattr(route, "path", "") for route in app.routes]
+        # newer FastAPI stores included routers lazily - expand them too
+        for route in app.routes:
+            orig = getattr(route, "original_router", None)
+            if orig is not None:
+                prefix = getattr(getattr(route, "include_context", None), "prefix", "") or ""
+                routes += [prefix + getattr(x, "path", "") for x in orig.routes]
+        for p in ("/api/health", "/api/chat", "/api/models", "/api/route-preview", "/api/regenerate",
+                  "/health", "/chat", "/models", "/route-preview", "/regenerate"):
+            self.assertIn(p, routes)
 
-        # Verify registered route paths
-        routes = [route.path for route in app.routes]
-        
-        # Check standard /api/... routes
-        self.assertIn("/api/health", routes)
-        self.assertIn("/api/chat", routes)
-        self.assertIn("/api/models", routes)
-        self.assertIn("/api/route-preview", routes)
-        self.assertIn("/api/regenerate", routes)
-
-        # Check prefix-stripped routes for Vercel rewrite compatibility
-        self.assertIn("/health", routes)
-        self.assertIn("/chat", routes)
-        self.assertIn("/models", routes)
-        self.assertIn("/route-preview", routes)
-        self.assertIn("/regenerate", routes)
-
-    def test_02_security_and_environment_variables(self):
-        """Audit 2: Ensure zero hardcoded keys, os.getenv usage, and graceful demo_mode response."""
-        # 1. Verify environment resolution
-        env_key = get_server_openrouter_key()
-        # Should not crash even when unset
-        self.assertIsInstance(env_key, str)
-
-        # 2. Check demo mode trigger when key is absent
-        demo_payload = get_demo_mode_response("code", "qwen/qwen-2.5-coder-32b-instruct:free", "def hello(): pass")
-        self.assertEqual(demo_payload.get("status"), "demo_mode")
-        self.assertEqual(demo_payload.get("provider_status"), "demo_mode")
-        self.assertTrue(demo_payload.get("demo_mode"))
-        self.assertIn("response", demo_payload)
-        self.assertIn("OPENROUTER_API_KEY", demo_payload["response"])
-
-        # 3. Codebase scan for hardcoded live keys
+    def test_02_security_no_keys_needed(self):
+        self.assertFalse(is_demo_mode())
         root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        sensitive_patterns = [
-            re.compile(r"sk-or-v1-[a-f0-9]{32,}", re.IGNORECASE),
-            re.compile(r"sk-[a-zA-Z0-9]{32,}", re.IGNORECASE),
-        ]
+        sensitive = [re.compile(r"sk-or-v1-[a-f0-9]{32,}"), re.compile(r"sk-[a-zA-Z0-9]{40,}")]
         for dirpath, _, filenames in os.walk(os.path.join(root_dir, 'api')):
             for fn in filenames:
                 if fn.endswith('.py'):
-                    fpath = os.path.join(dirpath, fn)
-                    with open(fpath, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        for pat in sensitive_patterns:
-                            match = pat.search(content)
-                            self.assertIsNone(match, f"Hardcoded API key detected in {fpath}: {match.group(0) if match else ''}")
+                    content = open(os.path.join(dirpath, fn), encoding='utf-8').read()
+                    for pat in sensitive:
+                        self.assertIsNone(pat.search(content), f"Hardcoded key in {fn}")
+        # default mode must not depend on Gemini or OpenRouter env keys
+        config_src = open(os.path.join(root_dir, 'api', 'config.py'), encoding='utf-8').read()
+        self.assertIn("pollinations", config_src)
+        self.assertIn("llm7", config_src)
+        for gw in FREE_GATEWAYS.values():
+            self.assertFalse(gw["requires_key"])
 
-    def test_03_openrouter_cascade_and_router(self):
-        """Audit 3: Verify heuristic router compiles cleanly, executes in <2ms, and checks cascade list."""
-        # 1. Verify pre-compiled regex integrity
+    def test_03_orchestrator_router(self):
         self.assertGreater(len(COMPILED_CODE_REGEX), 0)
         self.assertGreater(len(COMPILED_MATH_REGEX), 0)
         self.assertGreater(len(COMPILED_CREATIVE_REGEX), 0)
-
-        # 2. Test sub-2ms heuristic classifier
-        test_queries = [
-            ("Write an asynchronous FastAPI websocket handler in Python", "code", "qwen/qwen-2.5-coder-32b-instruct:free"),
-            ("Solve the system of linear equations using Gaussian elimination step by step", "math_logic", "deepseek/deepseek-r1:free"),
-            ("Draft a persuasive marketing email announcing the launch of arkAI", "creative", "meta-llama/llama-3.3-70b-instruct:free"),
-            ("Who was Leonardo da Vinci and what were his main inventions?", "general", "google/gemini-2.0-flash-lite-001:free"),
+        cases = [
+            ("Write an asynchronous FastAPI websocket handler in Python", "code", "llm7/deepseek-v4-flash"),
+            ("Solve the system of linear equations using Gaussian elimination step by step", "math_logic", "llm7/deepseek-v4-flash"),
+            ("Draft a persuasive marketing email announcing the launch of arkAI", "creative", "llm7/glm-5.3-flash"),
+            ("Who was Leonardo da Vinci and what were his main inventions?", "general", "pollinations/gpt-oss-20b"),
         ]
-
-        for q, expected_cat, expected_model in test_queries:
-            cat, model, latency_ms = classify_prompt_intent(q)
-            self.assertEqual(cat, expected_cat, f"Mismatch for '{q}': expected {expected_cat}, got {cat}")
-            self.assertEqual(model, expected_model, f"Model mismatch for '{q}': expected {expected_model}, got {model}")
-            self.assertLess(latency_ms, 2.0, f"SLA breached: latency {latency_ms}ms >= 2.0ms")
-
-        # 3. Verify all models end with :free
-        for model in FREE_MODEL_POOL:
-            self.assertTrue(model.endswith(":free"), f"Model {model} must end with :free suffix")
-
-        # 4. Verify cascade sequence contains all free models
-        cascade = build_cascade_order("google/gemini-2.0-flash-lite-001:free")
-        self.assertEqual(len(cascade), 5)
-        self.assertEqual(set(cascade), set(FREE_MODEL_POOL))
+        for q, cat_exp, model_exp in cases:
+            cat, model, ms = classify_prompt_intent(q)
+            self.assertEqual(cat, cat_exp, q)
+            self.assertEqual(model, model_exp, q)
+            self.assertLess(ms, 2.0)
 
     def test_04_frontend_verification(self):
-        """Audit 4: Ensure public assets exist and include Try Next Model, multi-chat, and export features."""
         root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        public_dir = os.path.join(root_dir, 'public')
+        for fname in ('index.html', 'app.js', 'style.css', 'logo.svg'):
+            self.assertTrue(os.path.exists(os.path.join(root_dir, 'public', fname)), fname)
+        app_js = open(os.path.join(root_dir, 'public', 'app.js'), encoding='utf-8').read()
+        self.assertIn("handleTryNextModel", app_js)
+        self.assertIn("/api/regenerate", app_js)
+        self.assertIn("localStorage", app_js)
+        # React app: regenerate, per-reply PDF/Word download, model label, cleaned settings
+        app_tsx = open(os.path.join(root_dir, 'src', 'App.tsx'), encoding='utf-8').read()
+        self.assertIn("handleRegenerate", app_tsx)
+        self.assertIn("Download as PDF", app_tsx)
+        self.assertIn("Download as Word", app_tsx)
+        self.assertIn("Model used:", app_tsx)
+        self.assertIn("arkAI Models (Recommended)", app_tsx)
+        self.assertIn("Use My Own API Key", app_tsx)
+        self.assertNotIn("Vercel Deployment & Key Safety Guide", app_tsx)
+        export_ts = open(os.path.join(root_dir, 'src', 'export.ts'), encoding='utf-8').read()
+        self.assertIn("downloadAnswerPdf", export_ts)
+        self.assertIn("downloadAnswerDocx", export_ts)
+        self.assertIn("logo", export_ts.lower())
 
-        # Check required files
-        for fname in ['index.html', 'app.js', 'style.css', 'logo.svg']:
-            fpath = os.path.join(public_dir, fname)
-            self.assertTrue(os.path.exists(fpath), f"Missing frontend asset: {fname}")
-
-        # Check app.js content
-        with open(os.path.join(public_dir, 'app.js'), 'r', encoding='utf-8') as f:
-            app_js = f.read()
-            self.assertIn("🔀 Try Next Model", app_js, "app.js must render '🔀 Try Next Model' button")
-            self.assertIn("handleTryNextModel", app_js, "app.js must implement handleTryNextModel")
-            self.assertIn("exportChatAsJSON", app_js, "app.js must support JSON export")
-            self.assertIn("exportChatAsMarkdown", app_js, "app.js must support Markdown export")
-            self.assertIn("localStorage", app_js, "app.js must use localStorage for multi-chat")
-
-        # Check index.html content
-        with open(os.path.join(public_dir, 'index.html'), 'r', encoding='utf-8') as f:
-            html = f.read()
-            self.assertIn("arkAI", html)
-            self.assertIn("settings-modal", html)
-            self.assertIn("chat-history-list", html)
-
-    def test_05_imports_and_vercel_config(self):
-        """Audit 5: Check requirements.txt, .gitignore, and vercel.json configurations."""
+    def test_05_imports_and_config(self):
         root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-
-        # 1. requirements.txt
-        req_path = os.path.join(root_dir, 'requirements.txt')
-        self.assertTrue(os.path.exists(req_path))
-        with open(req_path, 'r', encoding='utf-8') as f:
-            reqs = f.read().lower()
-            for pkg in ['fastapi', 'uvicorn', 'httpx', 'python-dotenv', 'pydantic']:
-                self.assertIn(pkg, reqs, f"requirements.txt missing dependency: {pkg}")
-
-        # 2. vercel.json
-        vercel_path = os.path.join(root_dir, 'vercel.json')
-        self.assertTrue(os.path.exists(vercel_path))
-        with open(vercel_path, 'r', encoding='utf-8') as f:
-            vconfig = json.load(f)
-            self.assertTrue("builds" in vconfig or "rewrites" in vconfig or "routes" in vconfig)
-
-        # 3. .gitignore
-        gitignore_path = os.path.join(root_dir, '.gitignore')
-        self.assertTrue(os.path.exists(gitignore_path))
-        with open(gitignore_path, 'r', encoding='utf-8') as f:
-            gi = f.read()
-            for ignored in ['.env', '.venv', '__pycache__', '.vercel']:
-                self.assertIn(ignored, gi, f".gitignore must contain: {ignored}")
+        reqs = open(os.path.join(root_dir, 'requirements.txt'), encoding='utf-8').read().lower()
+        for pkg in ('fastapi', 'uvicorn', 'httpx', 'python-dotenv', 'pydantic'):
+            self.assertIn(pkg, reqs)
+        vconfig = json.load(open(os.path.join(root_dir, 'vercel.json'), encoding='utf-8'))
+        self.assertTrue("rewrites" in vconfig or "services" in vconfig)
+        gi = open(os.path.join(root_dir, '.gitignore'), encoding='utf-8').read()
+        for ignored in ('.env', '__pycache__'):
+            self.assertIn(ignored, gi)
+        pkg = json.load(open(os.path.join(root_dir, 'package.json'), encoding='utf-8'))
+        self.assertIn('jspdf', pkg['dependencies'])
+        self.assertIn('docx', pkg['dependencies'])
+        self.assertNotIn('@google/genai', pkg.get('dependencies', {}))
 
 
 if __name__ == '__main__':

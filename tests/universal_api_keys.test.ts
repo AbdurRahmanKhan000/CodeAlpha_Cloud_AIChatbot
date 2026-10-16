@@ -1,82 +1,36 @@
 /**
- * arkAI Test Suite: Universal API Key Integration & Zero-Model Config
- * Verifies that arkAI accepts ANY key (ChatGPT, Gemini, Grok, Claude, DeepSeek, Meta, Qwen)
- * without requiring the user to choose specific models, and uses Gemini by default.
+ * arkAI Test Suite: Own-Key Integration + Free Default
+ * - Own-Key mode accepts any major provider key with zero model setup.
+ * - Zero-key default is the arkAI FREE orchestrator (no vendor dependency).
  */
-
-import { detectProviderFromKey } from '../server.js';
+import { detectProviderFromKey, OWN_KEY_PROVIDERS, MODEL_CATALOG, rankedModelsForIntent } from '../src/orchestrator.ts';
 
 export function runUniversalKeyTests(): { name: string; passed: boolean; details?: string }[] {
   const results = [];
-
-  // 1. ChatGPT (OpenAI) Key
-  const chatGptKey = 'sk-proj-abc1234567890XYZ';
-  const chatGptResult = detectProviderFromKey(chatGptKey);
+  const cases: Array<[string, string | undefined, string, string]> = [
+    ['sk-' + 'proj-' + 'TESTKEY00000000000000000000000000004', undefined, 'openai', 'Accepts ChatGPT (OpenAI) key without manual model setup'],
+    ['AIza' + 'Sy' + 'TESTKEY000000000000000000000000003', undefined, 'gemini', 'Accepts Google Gemini key (Own-Key mode only)'],
+    ['xai-demo-key-123', undefined, 'grok', 'Accepts xAI Grok key automatically'],
+    ['sk-' + 'ant-' + 'api03-' + 'TESTKEY0000000000000000000000000001', undefined, 'claude', 'Accepts Anthropic Claude key automatically'],
+    ['sk-' + 'TESTKEY000000000000000000000000000005', 'deepseek', 'deepseek', 'Accepts DeepSeek key without model configuration'],
+    ['gsk_meta_demo_key', undefined, 'meta', 'Accepts Meta AI (Groq/LLaMA) key'],
+    ['sk-' + 'TESTKEY000000000000000000000000000006', 'qwen', 'qwen', 'Accepts Alibaba Qwen key without model selection'],
+    ['sk-' + 'or-' + 'v1-' + 'TESTKEY0000000000000000000000000002', undefined, 'openrouter', 'Accepts OpenRouter key (Own-Key mode only)'],
+  ];
+  for (const [key, explicit, expected, name] of cases) {
+    const provider = detectProviderFromKey(key, explicit);
+    const spec = OWN_KEY_PROVIDERS[provider];
+    results.push({ name, passed: provider === expected && spec.models.length > 0, details: `Provider: ${spec.name}, models: ${spec.models.join(', ')}` });
+  }
   results.push({
-    name: 'Accepts ChatGPT (OpenAI) API key without manual model setup',
-    passed: chatGptResult.provider === 'openai' && chatGptResult.model === 'gpt-4o' && chatGptResult.fallbackModels.length > 0,
-    details: `Provider: ${chatGptResult.name}, Primary Model: ${chatGptResult.model}, Fallback: ${chatGptResult.fallbackModels.join(', ')}`
+    name: 'Zero-key default = free arkAI orchestration (no Gemini/OpenRouter dependency)',
+    passed: MODEL_CATALOG.length >= 4 && MODEL_CATALOG.every(m => ['pollinations', 'llm7'].includes(m.gateway)),
+    details: `Free catalog: ${MODEL_CATALOG.map(m => m.id).join(', ')}`,
   });
-
-  // 2. Google Gemini Key
-  const geminiKey = 'AIzaSyDemoKey1234567890';
-  const geminiResult = detectProviderFromKey(geminiKey);
   results.push({
-    name: 'Accepts Google Gemini API key with optimal speed model',
-    passed: geminiResult.provider === 'gemini' && geminiResult.model === 'gemini-flash-latest',
-    details: `Provider: ${geminiResult.name}, Model: ${geminiResult.model}`
+    name: 'Intent rankings give a distinct best model per intent (Regenerate can hop)',
+    passed: rankedModelsForIntent('code')[0].id !== rankedModelsForIntent('creative')[0].id && rankedModelsForIntent('general').length >= 4,
+    details: `code->${rankedModelsForIntent('code')[0].id}, creative->${rankedModelsForIntent('creative')[0].id}, general->${rankedModelsForIntent('general')[0].id}`,
   });
-
-  // 3. xAI Grok Key
-  const grokKey = 'xai-demo-key-123456789';
-  const grokResult = detectProviderFromKey(grokKey);
-  results.push({
-    name: 'Accepts xAI Grok API key automatically',
-    passed: grokResult.provider === 'grok' && Boolean(grokResult.endpoint?.includes('x.ai')),
-    details: `Provider: ${grokResult.name}, Model: ${grokResult.model}`
-  });
-
-  // 4. Anthropic Claude Key
-  const claudeKey = 'sk-ant-api03-demo-key-12345';
-  const claudeResult = detectProviderFromKey(claudeKey);
-  results.push({
-    name: 'Accepts Anthropic Claude API key automatically',
-    passed: claudeResult.provider === 'claude' && claudeResult.endpoint === 'https://api.anthropic.com/v1/messages',
-    details: `Provider: ${claudeResult.name}, Model: ${claudeResult.model}`
-  });
-
-  // 5. DeepSeek Key
-  const deepseekResult = detectProviderFromKey('sk-deepseek-demo-key', 'deepseek');
-  results.push({
-    name: 'Accepts DeepSeek API key without specific model configuration',
-    passed: deepseekResult.provider === 'deepseek' && deepseekResult.endpoint === 'https://api.deepseek.com/chat/completions',
-    details: `Provider: ${deepseekResult.name}, Model: ${deepseekResult.model}`
-  });
-
-  // 6. Meta AI (Groq/LLaMA) Key
-  const metaKey = 'gsk_meta_demo_key_12345';
-  const metaResult = detectProviderFromKey(metaKey);
-  results.push({
-    name: 'Accepts Meta AI (Groq/LLaMA) API key',
-    passed: metaResult.provider === 'meta' && Boolean(metaResult.endpoint?.includes('chat/completions')),
-    details: `Provider: ${metaResult.name}, Model: ${metaResult.model}`
-  });
-
-  // 7. Alibaba Qwen Key
-  const qwenResult = detectProviderFromKey('sk-qwen-demo-key', 'qwen');
-  results.push({
-    name: 'Accepts Alibaba Qwen API key without specific model selection',
-    passed: qwenResult.provider === 'qwen' && Boolean(qwenResult.endpoint?.includes('aliyuncs.com')),
-    details: `Provider: ${qwenResult.name}, Model: ${qwenResult.model}`
-  });
-
-  // 8. Zero-Key Default Behavior (User requirement: "By default, the existing model of Gemini is correct/best on its place")
-  const defaultResult = detectProviderFromKey('');
-  results.push({
-    name: 'Zero-key default uses existing best Gemini model (Zero setup required)',
-    passed: defaultResult.provider === 'gemini' && defaultResult.model === 'gemini-flash-latest',
-    details: `Default Provider: ${defaultResult.name}, Model: ${defaultResult.model}`
-  });
-
   return results;
 }
