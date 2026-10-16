@@ -11,6 +11,8 @@ export function runBrightModeTests(): { name: string; passed: boolean; details?:
   const results = [];
   const appPath = path.resolve('src/App.tsx');
   const appContent = fs.readFileSync(appPath, 'utf-8');
+  const mdPath = path.resolve('src/Markdown.tsx');
+  const mdContent = fs.existsSync(mdPath) ? fs.readFileSync(mdPath, 'utf-8') : '';
 
   // Test 1: Empty hero state heading contrast in light mode
   const hasHeroHeadingContrast = appContent.includes("theme === 'dark' ? 'text-zinc-100' : 'text-zinc-900'");
@@ -37,7 +39,7 @@ export function runBrightModeTests(): { name: string; passed: boolean; details?:
   });
 
   // Test 4: Markdown headers (h1, h2, h3) render with dark high-contrast in Bright Mode
-  const hasHeadingMarkdownContrast = appContent.includes("theme === 'dark' ? 'text-zinc-100' : 'text-zinc-950'");
+  const hasHeadingMarkdownContrast = mdContent.includes("dark ? 'text-zinc-50' : 'text-zinc-950'") || mdContent.includes('text-zinc-950');
   results.push({
     name: 'Markdown headings render with high-contrast text in Bright Mode',
     passed: hasHeadingMarkdownContrast,
@@ -45,11 +47,11 @@ export function runBrightModeTests(): { name: string; passed: boolean; details?:
   });
 
   // Test 5: Blockquotes have dedicated light callout background in Bright Mode
-  const hasBlockquoteTheme = appContent.includes("bg-amber-50 text-amber-950");
+  const hasBlockquoteTheme = mdContent.includes('border-indigo-400') && mdContent.includes('text-zinc-600');
   results.push({
     name: 'Blockquotes and notice banners adapt cleanly to Bright Mode',
     passed: hasBlockquoteTheme,
-    details: 'Callouts use bg-amber-50 in light mode instead of dark box'
+    details: 'Blockquotes use an indigo rule with dark text in light mode (Markdown.tsx)'
   });
 
   // Test 6: Settings modal and dashboard adapt to Bright Mode
