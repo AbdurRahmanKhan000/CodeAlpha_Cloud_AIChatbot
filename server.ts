@@ -10,7 +10,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { executeOrchestratedChat, executeOrchestratedChatStream, classifyPromptIntent, rankedModelsForIntent, MODEL_CATALOG, FREE_GATEWAYS, detectProviderFromKey } from './src/orchestrator.ts';
+import { executeOrchestratedChat, executeOrchestratedChatStream, classifyPromptIntent, rankedModelsForIntent, MODEL_CATALOG, FREE_GATEWAYS, detectProviderFromKey, allModels } from './src/orchestrator.ts';
+import { recordFeedback, scoreboardSnapshot, breakerSnapshot } from './src/adaptive.ts';
 export { detectProviderFromKey };
 
 dotenv.config();
@@ -250,11 +251,11 @@ app.get('/api/health', (req: Request, res: Response) => {
   res.json({
     status: 'operational',
     engine: 'arkAI Orchestrated Chatbot',
-    version: '4.0.0',
+    version: '5.0.0',
     api_key_required: false,
     gateways: Object.keys(FREE_GATEWAYS),
-    models_count: MODEL_CATALOG.length,
-    models: MODEL_CATALOG.map(m => m.id),
+    models_count: allModels().length,
+    models: allModels().map(m => m.id),
     intents_indexed: patternsData.intents.length,
     triggers_indexed: exactTriggers.size,
     uptime_seconds: process.uptime(),
@@ -263,7 +264,22 @@ app.get('/api/health', (req: Request, res: Response) => {
 });
 
 app.get('/api/models', (req: Request, res: Response) => {
-  res.json({ count: MODEL_CATALOG.length, models: MODEL_CATALOG, gateways: Object.keys(FREE_GATEWAYS) });
+  const models = allModels();
+  res.json({ count: models.length, models, gateways: Object.keys(FREE_GATEWAYS) });
+});
+
+// Anonymous aggregate learning: thumbs up/down + regenerate-away signals.
+// Only (intent, model, event) counters are stored - never prompts or answers.
+app.post('/api/feedback', async (req: Request, res: Response) => {
+  const { model_used, event } = req.body || {};
+  let intent = req.body?.intent;
+  if (!['code', 'math_logic', 'creative', 'general'].includes(intent)) intent = 'general';
+  const record = await recordFeedback(intent, model_used || '', event || '');
+  res.json({ status: 'recorded', model_used, intent, record });
+});
+
+app.get('/api/learning', (req: Request, res: Response) => {
+  res.json({ ...scoreboardSnapshot(), benched_models: breakerSnapshot() });
 });
 
 app.post('/api/route-preview', (req: Request, res: Response) => {

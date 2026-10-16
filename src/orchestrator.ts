@@ -12,6 +12,8 @@
  * models are used.
  */
 
+import { isBenched, recordFailure, recordSuccess, applyLearning } from './adaptive.ts';
+
 export interface LogicalModel {
   id: string;
   gateway: string;
@@ -32,21 +34,85 @@ export const MODEL_CATALOG: LogicalModel[] = [
   { id: 'llm7/deepseek-v4-flash', gateway: 'llm7', upstreamModel: 'DeepSeek-V4-Flash-0731', name: 'DeepSeek V4 Flash', providerFamily: 'DeepSeek', badge: 'Deep Reasoning & Code', strengths: ['code', 'math_logic', 'general'] },
   { id: 'llm7/glm-5.3-flash', gateway: 'llm7', upstreamModel: 'GLM-5.3-Flash', name: 'GLM 5.3 Flash', providerFamily: 'Z.ai (GLM)', badge: 'Ultra-Fast', strengths: ['general', 'creative', 'code'] },
   { id: 'llm7/gpt-oss-20b', gateway: 'llm7', upstreamModel: 'gpt-oss:20b', name: 'GPT-OSS 20B (LLM7)', providerFamily: 'OpenAI (open weights)', badge: 'Reasoning', strengths: ['general', 'math_logic', 'creative'] },
+  { id: 'llm7/codestral', gateway: 'llm7', upstreamModel: 'codestral-latest', name: 'Codestral', providerFamily: 'Mistral AI', badge: 'Code Specialist', strengths: ['code', 'math_logic'] },
+  { id: 'llm7/mistral-nemo', gateway: 'llm7', upstreamModel: 'mistral-Nemo-Instruct-2407', name: 'Mistral Nemo', providerFamily: 'Mistral AI', badge: 'Fast & Creative', strengths: ['creative', 'general', 'code'] },
+  { id: 'llm7/nemotron-3-nano', gateway: 'llm7', upstreamModel: 'nemotron-3-nano:30b', name: 'Nemotron 3 Nano', providerFamily: 'NVIDIA', badge: 'Fast Reasoning', strengths: ['math_logic', 'general', 'code'] },
 ];
 
 export const MODEL_REGISTRY: Record<string, LogicalModel> = Object.fromEntries(MODEL_CATALOG.map(m => [m.id, m]));
 
 export const INTENT_RANKINGS: Record<string, string[]> = {
-  code: ['llm7/deepseek-v4-flash', 'pollinations/gpt-oss-20b', 'llm7/glm-5.3-flash', 'llm7/gpt-oss-20b'],
-  math_logic: ['llm7/deepseek-v4-flash', 'pollinations/gpt-oss-20b', 'llm7/gpt-oss-20b', 'llm7/glm-5.3-flash'],
-  creative: ['llm7/glm-5.3-flash', 'pollinations/gpt-oss-20b', 'llm7/gpt-oss-20b', 'llm7/deepseek-v4-flash'],
-  general: ['pollinations/gpt-oss-20b', 'llm7/glm-5.3-flash', 'llm7/deepseek-v4-flash', 'llm7/gpt-oss-20b'],
+  code: ['llm7/deepseek-v4-flash', 'llm7/codestral', 'pollinations/gpt-oss-20b', 'llm7/nemotron-3-nano', 'llm7/glm-5.3-flash', 'llm7/gpt-oss-20b', 'llm7/mistral-nemo'],
+  math_logic: ['llm7/deepseek-v4-flash', 'pollinations/gpt-oss-20b', 'llm7/nemotron-3-nano', 'llm7/gpt-oss-20b', 'llm7/codestral', 'llm7/glm-5.3-flash', 'llm7/mistral-nemo'],
+  creative: ['llm7/glm-5.3-flash', 'llm7/mistral-nemo', 'pollinations/gpt-oss-20b', 'llm7/deepseek-v4-flash', 'llm7/nemotron-3-nano', 'llm7/gpt-oss-20b', 'llm7/codestral'],
+  general: ['pollinations/gpt-oss-20b', 'llm7/glm-5.3-flash', 'llm7/mistral-nemo', 'llm7/deepseek-v4-flash', 'llm7/nemotron-3-nano', 'llm7/gpt-oss-20b', 'llm7/codestral'],
 };
+
+// -------------------------------------------- booster house keys (optional)
+// If the OWNER sets a free-tier key as a server env var, arkAI gains extra
+// gateways with their own dedicated quota - invisible to end users, who
+// still need no key. Supported: ARKAI_GROQ_API_KEY / GROQ_API_KEY,
+// ARKAI_LLM7_API_KEY / LLM7_API_KEY, ARKAI_OPENROUTER_API_KEY / OPENROUTER_API_KEY.
+const env = (globalThis as any).process?.env || {};
+
+export const HOUSE_KEYS: Record<string, string> = {
+  groq: env.ARKAI_GROQ_API_KEY || env.GROQ_API_KEY || '',
+  llm7: env.ARKAI_LLM7_API_KEY || env.LLM7_API_KEY || '',
+  openrouter: env.ARKAI_OPENROUTER_API_KEY || env.OPENROUTER_API_KEY || '',
+};
+
+export const HOUSE_GATEWAYS: Record<string, { name: string; endpoint: string; timeoutMs: number; keyEnv: string }> = {
+  house_groq: { name: 'Groq (house key)', endpoint: 'https://api.groq.com/openai/v1/chat/completions', timeoutMs: 30000, keyEnv: 'groq' },
+  llm7_key: { name: 'LLM7 (house key)', endpoint: 'https://api.llm7.io/v1/chat/completions', timeoutMs: 30000, keyEnv: 'llm7' },
+  house_openrouter: { name: 'OpenRouter (house key)', endpoint: 'https://openrouter.ai/api/v1/chat/completions', timeoutMs: 45000, keyEnv: 'openrouter' },
+};
+
+export function houseModels(): LogicalModel[] {
+  const out: LogicalModel[] = [];
+  if (HOUSE_KEYS.groq) {
+    out.push(
+      { id: 'house/groq-llama-3.3-70b', gateway: 'house_groq', upstreamModel: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B (Groq)', providerFamily: 'Meta (via Groq)', badge: 'House Key · Fast', strengths: ['general', 'creative', 'code', 'math_logic'] },
+      { id: 'house/groq-llama-3.1-8b', gateway: 'house_groq', upstreamModel: 'llama-3.1-8b-instant', name: 'Llama 3.1 8B Instant (Groq)', providerFamily: 'Meta (via Groq)', badge: 'House Key · Instant', strengths: ['general', 'creative'] },
+    );
+  }
+  if (HOUSE_KEYS.llm7) {
+    for (const src of MODEL_CATALOG) {
+      if (src.gateway === 'llm7') {
+        out.push({ ...src, id: 'llm7key/' + src.id.split('/')[1], gateway: 'llm7_key', name: src.name + ' · Key' });
+      }
+    }
+  }
+  if (HOUSE_KEYS.openrouter) {
+    out.push(
+      { id: 'house/openrouter-llama-free', gateway: 'house_openrouter', upstreamModel: 'meta-llama/llama-3.3-70b-instruct:free', name: 'Llama 3.3 70B (OpenRouter Free)', providerFamily: 'Meta (via OpenRouter)', badge: 'House Key · Free', strengths: ['general', 'creative', 'code'] },
+      { id: 'house/openrouter-deepseek-r1-free', gateway: 'house_openrouter', upstreamModel: 'deepseek/deepseek-r1:free', name: 'DeepSeek R1 (OpenRouter Free)', providerFamily: 'DeepSeek (via OpenRouter)', badge: 'House Key · Reasoning', strengths: ['math_logic', 'code'] },
+    );
+  }
+  return out;
+}
+
+export function gatewaySpec(gatewayId: string): { name: string; endpoint: string; timeoutMs: number; authHeader: Record<string, string> | null } {
+  if (FREE_GATEWAYS[gatewayId]) return { ...FREE_GATEWAYS[gatewayId], authHeader: null };
+  const spec = HOUSE_GATEWAYS[gatewayId];
+  const key = HOUSE_KEYS[spec.keyEnv];
+  return { name: spec.name, endpoint: spec.endpoint, timeoutMs: spec.timeoutMs, authHeader: key ? { Authorization: `Bearer ${key}` } : null };
+}
+
+export function allModels(): LogicalModel[] {
+  return [...MODEL_CATALOG, ...houseModels()];
+}
 
 export function rankedModelsForIntent(intent: string, exclude: string[] = []): LogicalModel[] {
   const ranking = INTENT_RANKINGS[intent] || INTENT_RANKINGS.general;
   const ordered = ranking.map(id => MODEL_REGISTRY[id]).filter(Boolean);
   for (const m of MODEL_CATALOG) if (!ranking.includes(m.id)) ordered.push(m);
+  // Booster house models (dedicated quota) go first, best strength match first
+  const houses = houseModels();
+  if (houses.length) {
+    const strong = houses.filter(m => m.strengths.includes(intent));
+    const rest = houses.filter(m => !strong.includes(m));
+    ordered.unshift(...strong, ...rest);
+  }
   return ordered.filter(m => !exclude.includes(m.id));
 }
 
@@ -93,6 +159,20 @@ export function detectProviderFromKey(key?: string, explicitProvider?: string): 
   if (k.startsWith('AIza')) return 'gemini';
   return 'openai';
 }
+
+// ------------------------------------------------- helpers: patience + breaker
+export function parseRetryAfter(reason: string): number {
+  if (!reason) return 0;
+  const m = /[Rr]etry after (\d+(?:\.\d+)?)/.exec(reason) || /"retry_after":\s*(\d+(?:\.\d+)?)/.exec(reason);
+  return m ? parseFloat(m[1]) : 0;
+}
+
+function unbenched(ranked: LogicalModel[]): LogicalModel[] {
+  const live = ranked.filter(m => !isBenched(m.id));
+  return live.length ? live : ranked;
+}
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 // ------------------------------------------------------------ transport
 export interface ChatTurn { role: string; content: string }
@@ -171,24 +251,39 @@ export async function executeOrchestratedChat(opts: {
   }
 
   const intent = opts.intent || 'general';
-  const ranked = rankedModelsForIntent(intent, exclude);
+  const ranked = unbenched(applyLearning(intent, rankedModelsForIntent(intent, exclude)));
   const history: any[] = [];
+  let patienceUsed = false;
   for (const logical of ranked) {
-    const gw = FREE_GATEWAYS[logical.gateway];
+    const gw = gatewaySpec(logical.gateway);
     const start = process.hrtime.bigint();
-    try {
-      const { status, data } = await postJson(gw.endpoint, { model: logical.upstreamModel, messages, temperature }, {}, gw.timeoutMs);
-      const latency = Math.round(Number(process.hrtime.bigint() - start) / 1_000_000 * 100) / 100;
-      const content = extractContent(data);
-      if (status === 200 && content) {
-        const tried = [...exclude, logical.id];
-        const remaining = rankedModelsForIntent(intent, tried);
-        return { response: content, model_used: logical.id, model_name: logical.name, model_badge: logical.badge, gateway: logical.gateway, gateway_name: gw.name, provider_family: logical.providerFamily, provider_status: 'success', status: 'success', mode: 'arkai_free', failover_count: history.length, failover_history: history, next_model: remaining[0]?.id || null, next_model_name: remaining[0]?.name || null, tried_models: tried, total_latency_ms: Math.round(Number(process.hrtime.bigint() - overall) / 1_000_000 * 100) / 100 };
+    let ok = false, content = '', reason = '';
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const { status, data } = await postJson(gw.endpoint, { model: logical.upstreamModel, messages, temperature }, gw.authHeader || {}, gw.timeoutMs);
+        content = extractContent(data);
+        if (status === 200 && content) { ok = true; break; }
+        reason = errText(data, status);
+      } catch (e: any) {
+        reason = String(e?.message || e);
       }
-      history.push({ model: logical.id, gateway: logical.gateway, latency_ms: latency, reason: errText(data, status) });
-    } catch (e: any) {
-      history.push({ model: logical.id, gateway: logical.gateway, reason: String(e?.message || e) });
+      recordFailure(logical.id);
+      const ra = parseRetryAfter(reason);
+      if (!patienceUsed && ra > 0 && attempt === 0) {
+        patienceUsed = true;
+        await sleep(Math.min(ra + 1, 20) * 1000);
+        continue;
+      }
+      break;
     }
+    const latency = Math.round(Number(process.hrtime.bigint() - start) / 1_000_000 * 100) / 100;
+    if (ok) {
+      recordSuccess(logical.id);
+      const tried = [...exclude, logical.id];
+      const remaining = rankedModelsForIntent(intent, tried);
+      return { response: content, model_used: logical.id, model_name: logical.name, model_badge: logical.badge, gateway: logical.gateway, gateway_name: gw.name, provider_family: logical.providerFamily, provider_status: 'success', status: 'success', mode: 'arkai_free', failover_count: history.length, failover_history: history, next_model: remaining[0]?.id || null, next_model_name: remaining[0]?.name || null, tried_models: tried, total_latency_ms: Math.round(Number(process.hrtime.bigint() - overall) / 1_000_000 * 100) / 100 };
+    }
+    history.push({ model: logical.id, gateway: logical.gateway, latency_ms: latency, reason });
   }
   return { response: 'All free AI gateways are busy right now. arkAI tried ' + history.length + ' model(s) across Pollinations and LLM7. Please press Regenerate in a moment, or add your own API key in Settings.', model_used: 'none', model_name: 'All free models busy', model_badge: 'Failover Exhausted', gateway: 'none', gateway_name: '-', provider_status: 'exhausted', status: 'exhausted', mode: 'arkai_free', failover_count: history.length, failover_history: history, next_model: null, tried_models: exclude, total_latency_ms: Math.round(Number(process.hrtime.bigint() - overall) / 1_000_000 * 100) / 100 };
 }
@@ -240,14 +335,16 @@ async function* streamPostLines(url: string, payload: Record<string, unknown>, h
 }
 
 async function* streamGatewayDeltas(logical: LogicalModel, messages: ChatTurn[], temperature: number): AsyncGenerator<string> {
-  const gw = FREE_GATEWAYS[logical.gateway];
+  const gw = gatewaySpec(logical.gateway);
   let any = false;
-  for await (const line of streamPostLines(gw.endpoint, { model: logical.upstreamModel, messages, temperature, stream: true }, {}, gw.timeoutMs + 60000)) {
+  for await (const line of streamPostLines(gw.endpoint, { model: logical.upstreamModel, messages, temperature, stream: true }, gw.authHeader || {}, gw.timeoutMs + 60000)) {
     const d = parseSseDelta(line);
     if (d) { any = true; yield d; }
   }
   if (!any) throw new Error('Empty stream from model');
 }
+
+
 
 export async function* executeOrchestratedChatStream(opts: ChatOptions): AsyncGenerator<StreamEvent> {
   const started = Date.now();
@@ -306,24 +403,46 @@ export async function* executeOrchestratedChatStream(opts: ChatOptions): AsyncGe
     return;
   }
 
-  const ranked = rankedModelsForIntent(opts.intent || 'general', exclude);
+  const intent = opts.intent || 'general';
+  const ranked = unbenched(applyLearning(intent, rankedModelsForIntent(intent, exclude)));
   const failover: Array<Record<string, unknown>> = [];
+  let patienceUsed = false;
   for (const logical of ranked) {
-    let collected = '';
-    try {
+    const state = { collected: '' };
+    const attemptOnce = async function* (): AsyncGenerator<StreamEvent> {
       const gen = streamGatewayDeltas(logical, messages, temperature);
-      let first = await gen.next();
+      const first = await gen.next();
       if (first.done || !first.value) throw new Error('Empty stream');
-      yield { type: 'meta', model_used: logical.id, model_name: logical.name, model_badge: logical.badge, gateway: logical.gateway, gateway_name: FREE_GATEWAYS[logical.gateway].name, provider_family: logical.providerFamily, mode: 'arkai_free' };
-      collected += first.value;
+      yield { type: 'meta', model_used: logical.id, model_name: logical.name, model_badge: logical.badge, gateway: logical.gateway, gateway_name: gatewaySpec(logical.gateway).name, provider_family: logical.providerFamily, mode: 'arkai_free' };
+      state.collected += first.value;
       yield { type: 'delta', content: first.value };
-      for await (const d of gen) { collected += d; yield { type: 'delta', content: d }; }
+      for await (const d of gen) { state.collected += d; yield { type: 'delta', content: d }; }
+    };
+    try {
+      yield* attemptOnce();
+      recordSuccess(logical.id);
     } catch (e) {
-      if (!collected) { failover.push({ model: logical.id, gateway: logical.gateway, reason: String(e) }); continue; }
+      if (state.collected) {
+        recordSuccess(logical.id);
+      } else {
+        recordFailure(logical.id);
+        const ra = parseRetryAfter(String(e));
+        if (!patienceUsed && ra > 0) {
+          patienceUsed = true;
+          const waitS = Math.min(ra + 1, 20);
+          yield { type: 'status', message: `Free models are busy - retrying in ${Math.floor(waitS)}s...` };
+          await sleep(waitS * 1000);
+          try { yield* attemptOnce(); if (state.collected) recordSuccess(logical.id); } catch { /* keep whatever arrived */ }
+          if (!state.collected) { failover.push({ model: logical.id, gateway: logical.gateway, reason: String(e) }); continue; }
+        } else {
+          failover.push({ model: logical.id, gateway: logical.gateway, reason: String(e) });
+          continue;
+        }
+      }
     }
     const tried = [...exclude, logical.id];
-    const remaining = rankedModelsForIntent(opts.intent || 'general', tried);
-    yield done({ response: collected, model_used: logical.id, model_name: logical.name, model_badge: logical.badge, gateway: logical.gateway, gateway_name: FREE_GATEWAYS[logical.gateway].name, provider_family: logical.providerFamily, provider_status: 'success', status: 'success', mode: 'arkai_free', failover_count: failover.length, failover_history: failover, next_model: remaining[0]?.id || null, next_model_name: remaining[0]?.name || null, tried_models: tried });
+    const remaining = rankedModelsForIntent(intent, tried);
+    yield done({ response: state.collected, model_used: logical.id, model_name: logical.name, model_badge: logical.badge, gateway: logical.gateway, gateway_name: gatewaySpec(logical.gateway).name, provider_family: logical.providerFamily, provider_status: 'success', status: 'success', mode: 'arkai_free', failover_count: failover.length, failover_history: failover, next_model: remaining[0]?.id || null, next_model_name: remaining[0]?.name || null, tried_models: tried });
     return;
   }
   yield done({ response: `All free AI gateways are busy right now. arkAI tried ${failover.length} model(s) across Pollinations and LLM7. Please press Regenerate in a moment, or add your own API key in Settings.`, model_used: 'none', model_name: 'All free models busy', model_badge: 'Failover Exhausted', gateway: 'none', gateway_name: '-', provider_status: 'exhausted', status: 'exhausted', mode: 'arkai_free', failover_count: failover.length, failover_history: failover, next_model: null, tried_models: exclude });
