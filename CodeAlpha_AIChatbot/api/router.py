@@ -223,6 +223,16 @@ async def _call_own_key(provider: str, api_key: str, messages: List[Dict[str, st
 
 
 # ---------------------------------------------------------------- helpers: patience + breaker
+# Latency discipline (v5.1): a model that cannot produce its FIRST token in
+# 7s is abandoned and the cascade moves on - serial full-timeout waits were
+# the main cause of 30-60s answers. Once tokens flow, a generous 30s idle
+# gap is allowed between chunks. The retry-after "patience" wait is spent
+# ONLY when the failing model is the last one left (cap 12s).
+FIRST_TOKEN_SECONDS = 7.0
+IDLE_SECONDS = 30.0
+PATIENCE_MAX_SECONDS = 12.0
+
+
 def _parse_retry_after(reason: str) -> float:
     if not reason:
         return 0.0
@@ -279,7 +289,7 @@ async def execute_orchestrated_chat(
         intent, ranked_models_for_intent(intent, exclude=exclude_models)))
     failover_history: List[Dict[str, Any]] = []
     patience_used = False
-    for logical in ranked:
+    for idx, logical in enumerate(ranked):
         start_ns = time.perf_counter_ns()
         ok, content, reason = False, "", ""
         for attempt in range(2):
@@ -289,9 +299,9 @@ async def execute_orchestrated_chat(
                 break
             adaptive.record_failure(logical["id"])
             ra = _parse_retry_after(reason)
-            if not patience_used and ra > 0 and attempt == 0:
+            if not patience_used and ra > 0 and attempt == 0 and idx == len(ranked) - 1:
                 patience_used = True
-                await asyncio.sleep(min(ra + 1, 20))
+                await asyncio.sleep(min(ra + 1, PATIENCE_MAX_SECONDS))
                 continue
             break
         latency = round((time.perf_counter_ns() - start_ns) / 1_000_000.0, 2)
@@ -514,64 +524,81 @@ async def execute_orchestrated_chat_stream(
         intent, ranked_models_for_intent(intent, exclude=exclude_models)))
     failover_history = []
     patience_used = False
-    for logical in ranked:
-        collected = ""
+
+    async def _attempt(logical, state):
+        """One streaming attempt with a first-token deadline (7s) and a
+        per-chunk idle deadline (30s). Yields meta/delta events; progress is
+        tracked in state['collected']. Raises on failure before/at any point;
+        partial content stays in state and counts as success upstream."""
+        agen = _stream_gateway_model(logical, effective, temperature)
         try:
-            announced = False
-            async for delta in _stream_gateway_model(logical, effective, temperature):
-                if not announced:
-                    yield {"type": "meta", "model_used": logical["id"],
-                           "model_name": logical["name"], "model_badge": logical["badge"],
-                           "gateway": logical["gateway"],
-                           "gateway_name": gateway_spec(logical["gateway"])["name"],
-                           "provider_family": logical["provider_family"],
-                           "mode": "arkai_free"}
-                    announced = True
-                collected += delta
+            try:
+                delta = await asyncio.wait_for(agen.__anext__(), FIRST_TOKEN_SECONDS)
+            except StopAsyncIteration:
+                raise _StreamOpenError(502, "Empty stream from model")
+            except (asyncio.TimeoutError, TimeoutError):
+                raise _StreamOpenError(504, f"No first token within {FIRST_TOKEN_SECONDS}s")
+            yield {"type": "meta", "model_used": logical["id"],
+                   "model_name": logical["name"], "model_badge": logical["badge"],
+                   "gateway": logical["gateway"],
+                   "gateway_name": gateway_spec(logical["gateway"])["name"],
+                   "provider_family": logical["provider_family"],
+                   "mode": "arkai_free"}
+            state["collected"] += delta
+            yield {"type": "delta", "content": delta}
+            while True:
+                try:
+                    delta = await asyncio.wait_for(agen.__anext__(), IDLE_SECONDS)
+                except StopAsyncIteration:
+                    break
+                except (asyncio.TimeoutError, TimeoutError):
+                    break  # stalled mid-answer: keep what we have
+                state["collected"] += delta
                 yield {"type": "delta", "content": delta}
-            adaptive.record_success(logical["id"])
+        finally:
+            try:
+                await agen.aclose()
+            except Exception:
+                pass
+
+    for idx, logical in enumerate(ranked):
+        state = {"collected": ""}
+        error = None
+        try:
+            async for event in _attempt(logical, state):
+                yield event
         except Exception as e:  # noqa: BLE001
-            if collected:
-                adaptive.record_success(logical["id"])
-            else:
-                adaptive.record_failure(logical["id"])
-                ra = _parse_retry_after(str(e))
-                if not patience_used and ra > 0:
-                    patience_used = True
-                    wait_s = min(ra + 1, 20)
-                    yield {"type": "status",
-                           "message": f"Free models are busy - retrying in {int(wait_s)}s..."}
-                    await asyncio.sleep(wait_s)
-                    try:
-                        async for delta in _stream_gateway_model(logical, effective, temperature):
-                            if not announced:
-                                yield {"type": "meta", "model_used": logical["id"],
-                                       "model_name": logical["name"], "model_badge": logical["badge"],
-                                       "gateway": logical["gateway"],
-                                       "gateway_name": gateway_spec(logical["gateway"])["name"],
-                                       "provider_family": logical["provider_family"],
-                                       "mode": "arkai_free"}
-                                announced = True
-                            collected += delta
-                            yield {"type": "delta", "content": delta}
-                        if collected:
-                            adaptive.record_success(logical["id"])
-                    except Exception:
-                        collected = collected  # keep whatever arrived
-                    if not collected:
-                        failover_history.append({"model": logical["id"],
-                                                 "gateway": logical["gateway"],
-                                                 "reason": str(e)})
-                        continue
-                else:
-                    failover_history.append({"model": logical["id"],
-                                             "gateway": logical["gateway"],
-                                             "reason": str(e)})
-                    continue
+            error = e
+        if state["collected"]:
+            adaptive.record_success(logical["id"])
+        else:
+            adaptive.record_failure(logical["id"])
+            ra = _parse_retry_after(str(error)) if error else 0.0
+            is_last = idx == len(ranked) - 1
+            if not patience_used and ra > 0 and is_last:
+                # Patience is a LAST resort only: waiting is expensive, so we
+                # spend it solely when no other model is left to try.
+                patience_used = True
+                wait_s = min(ra + 1, PATIENCE_MAX_SECONDS)
+                yield {"type": "status",
+                       "message": f"Free models are busy - retrying in {int(wait_s)}s..."}
+                await asyncio.sleep(wait_s)
+                try:
+                    async for event in _attempt(logical, state):
+                        yield event
+                except Exception:
+                    pass
+                if state["collected"]:
+                    adaptive.record_success(logical["id"])
+            if not state["collected"]:
+                failover_history.append({"model": logical["id"],
+                                         "gateway": logical["gateway"],
+                                         "reason": str(error) if error else "no response"})
+                continue
         tried = list(exclude_models or []) + [logical["id"]]
         remaining = ranked_models_for_intent(intent, exclude=tried)
         yield _done({
-            "response": collected, "model_used": logical["id"],
+            "response": state["collected"], "model_used": logical["id"],
             "model_name": logical["name"], "model_badge": logical["badge"],
             "gateway": logical["gateway"],
             "gateway_name": gateway_spec(logical["gateway"])["name"],
