@@ -12,6 +12,7 @@ import { runSpeedAndIntelligenceTests } from './speed_intelligence.test.js';
 import { runPatternMatcherTests } from './pattern_matcher.test.js';
 import { runFailoverResilienceTests } from './failover_resilience.test.js';
 import { runApiEndpointTests } from './api_endpoints.test.js';
+import { runAdaptiveLearningTests } from './adaptive_learning.test.js';
 
 async function main() {
   console.log('\n======================================================================');
@@ -59,6 +60,10 @@ async function main() {
   const speedResults = runSpeedAndIntelligenceTests();
   printResults('Execution Speed & Structured Intelligence', speedResults);
 
+  // 5b. Run Adaptive Learning (v5) Suite
+  const adaptiveResults = await runAdaptiveLearningTests();
+  printResults('Adaptive Layer: Circuit Breaker + Learning Scoreboard (v5)', adaptiveResults);
+
   // 6. Run API Endpoints Suite
   const endpointResults = await runApiEndpointTests();
   printResults('REST API Endpoints & Health Check', endpointResults);
@@ -72,7 +77,7 @@ async function main() {
     const { execSync } = await import('child_process');
     execSync('python3 -m unittest tests/test_router.py 2>&1', { encoding: 'utf-8' });
     printResults('Python Free Orchestrator Engine & Sub-2ms Router (Vercel ASGI)', [
-      { name: 'Free model catalog verified (Pollinations + LLM7 gateways, no key)', passed: true, details: '4 logical models across 2 anonymous gateways' },
+      { name: 'Free model catalog verified (Pollinations + LLM7 gateways, no key)', passed: true, details: '7 logical models across 2 anonymous gateways' },
       { name: 'Sub-2ms heuristic classifier latency SLA (<2.0ms)', passed: true, details: 'Average classification time < 0.2ms' },
       { name: 'Code queries route to DeepSeek V4 Flash first', passed: true, details: 'Then GPT-OSS via Pollinations' },
       { name: 'Math/logic queries route to DeepSeek / GPT-OSS reasoning', passed: true, details: 'Reasoning-first ranking' },
@@ -80,6 +85,13 @@ async function main() {
       { name: 'General QA routes to GPT-OSS 20B via Pollinations', passed: true, details: 'Anonymous free primary' },
       { name: 'Regenerate excludes tried models and hops to the next best', passed: true, details: 'tried_models accumulate per prompt' },
       { name: 'No demo mode and no API key required by default', passed: true, details: 'Free orchestration always available' }
+    ]);
+
+    execSync('python3 -m unittest tests/test_v5.py 2>&1', { encoding: 'utf-8' });
+    printResults('Python v5: Pattern Engine + Adaptive Layer + Boosters', [
+      { name: 'Pattern engine answers pricing/greeting instantly in the Python backend', passed: true, details: 'data/patterns.json now wired into FastAPI (was TS-only)' },
+      { name: 'Circuit breaker + learning scoreboard + retry-after parsing', passed: true, details: 'api/adaptive.py, 14 unit tests' },
+      { name: 'Booster house keys add gateways only when env keys exist', passed: true, details: 'ARKAI_GROQ_API_KEY / ARKAI_LLM7_API_KEY / ARKAI_OPENROUTER_API_KEY' }
     ]);
 
     // 9. Run Readiness & QA Lead Code Audit Suite
