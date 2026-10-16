@@ -30,12 +30,16 @@ try:
     from api.config import (
         FREE_GATEWAYS, MODEL_CATALOG, MODEL_REGISTRY, INTENT_RANKINGS,
         OWN_KEY_PROVIDERS, ranked_models_for_intent, detect_provider_from_key,
+        gateway_spec,
     )
+    from api import adaptive
 except ImportError:
     from config import (
         FREE_GATEWAYS, MODEL_CATALOG, MODEL_REGISTRY, INTENT_RANKINGS,
         OWN_KEY_PROVIDERS, ranked_models_for_intent, detect_provider_from_key,
+        gateway_spec,
     )
+    import adaptive
 
 # ---------------------------------------------------------------- classifier
 CODE_PATTERNS = [
@@ -138,8 +142,8 @@ def _extract_openai_content(data: Any) -> str:
 async def _call_gateway_model(logical: Dict[str, Any], messages: List[Dict[str, str]],
                               temperature: float) -> Tuple[bool, str, str]:
     """One free-gateway attempt. Returns (ok, content, error_reason)."""
-    gateway = FREE_GATEWAYS[logical["gateway"]]
-    headers = {"Content-Type": "application/json"}
+    gateway = gateway_spec(logical["gateway"])
+    headers = {"Content-Type": "application/json", **(gateway.get("auth_header") or {})}
     payload = {"model": logical["upstream_model"], "messages": messages,
                "temperature": temperature}
     try:
@@ -218,6 +222,24 @@ async def _call_own_key(provider: str, api_key: str, messages: List[Dict[str, st
             "failover_count": len(history), "failover_history": history, "mode": "own_key"}
 
 
+# ---------------------------------------------------------------- helpers: patience + breaker
+def _parse_retry_after(reason: str) -> float:
+    if not reason:
+        return 0.0
+    m = re.search(r"[Rr]etry after (\d+(?:\.\d+)?)", reason)
+    if m:
+        return float(m.group(1))
+    m = re.search(r'"retry_after":\s*(\d+(?:\.\d+)?)', reason)
+    if m:
+        return float(m.group(1))
+    return 0.0
+
+
+def _unbenched(ranked):
+    live = [m for m in ranked if not adaptive.is_benched(m["id"])]
+    return live if live else ranked
+
+
 # ---------------------------------------------------------------- orchestrator
 async def execute_orchestrated_chat(
     messages: List[Dict[str, str]],
@@ -253,11 +275,25 @@ async def execute_orchestrated_chat(
         result["tried_models"] = tried
         return result
 
-    ranked = ranked_models_for_intent(intent, exclude=exclude_models)
+    ranked = _unbenched(adaptive.apply_learning(
+        intent, ranked_models_for_intent(intent, exclude=exclude_models)))
     failover_history: List[Dict[str, Any]] = []
+    patience_used = False
     for logical in ranked:
         start_ns = time.perf_counter_ns()
-        ok, content, reason = await _call_gateway_model(logical, effective, temperature)
+        ok, content, reason = False, "", ""
+        for attempt in range(2):
+            ok, content, reason = await _call_gateway_model(logical, effective, temperature)
+            if ok:
+                adaptive.record_success(logical["id"])
+                break
+            adaptive.record_failure(logical["id"])
+            ra = _parse_retry_after(reason)
+            if not patience_used and ra > 0 and attempt == 0:
+                patience_used = True
+                await asyncio.sleep(min(ra + 1, 20))
+                continue
+            break
         latency = round((time.perf_counter_ns() - start_ns) / 1_000_000.0, 2)
         if ok:
             tried = list(exclude_models or []) + [logical["id"]]
@@ -268,7 +304,7 @@ async def execute_orchestrated_chat(
                 "model_name": logical["name"],
                 "model_badge": logical["badge"],
                 "gateway": logical["gateway"],
-                "gateway_name": FREE_GATEWAYS[logical["gateway"]]["name"],
+                "gateway_name": gateway_spec(logical["gateway"])["name"],
                 "provider_family": logical["provider_family"],
                 "provider_status": "success",
                 "status": "success",
@@ -369,12 +405,13 @@ async def _stream_post_lines(url: str, payload: Dict[str, Any],
 
 async def _stream_gateway_model(logical, messages, temperature):
     """Yield deltas from one free gateway model; raises before first delta on failure."""
-    gateway = FREE_GATEWAYS[logical["gateway"]]
+    gateway = gateway_spec(logical["gateway"])
+    headers = {"Content-Type": "application/json", **(gateway.get("auth_header") or {})}
     payload = {"model": logical["upstream_model"], "messages": messages,
                "temperature": temperature, "stream": True}
     got_any = False
     async for line in _stream_post_lines(gateway["endpoint"], payload,
-                                         {"Content-Type": "application/json"},
+                                         headers,
                                          gateway["timeout_seconds"] + 60):
         delta = _parse_sse_delta(line)
         if delta:
@@ -473,8 +510,10 @@ async def execute_orchestrated_chat_stream(
             "next_model": None, "tried_models": list(exclude_models or [])})
         return
 
-    ranked = ranked_models_for_intent(intent, exclude=exclude_models)
+    ranked = _unbenched(adaptive.apply_learning(
+        intent, ranked_models_for_intent(intent, exclude=exclude_models)))
     failover_history = []
+    patience_used = False
     for logical in ranked:
         collected = ""
         try:
@@ -484,27 +523,58 @@ async def execute_orchestrated_chat_stream(
                     yield {"type": "meta", "model_used": logical["id"],
                            "model_name": logical["name"], "model_badge": logical["badge"],
                            "gateway": logical["gateway"],
-                           "gateway_name": FREE_GATEWAYS[logical["gateway"]]["name"],
+                           "gateway_name": gateway_spec(logical["gateway"])["name"],
                            "provider_family": logical["provider_family"],
                            "mode": "arkai_free"}
                     announced = True
                 collected += delta
                 yield {"type": "delta", "content": delta}
+            adaptive.record_success(logical["id"])
         except Exception as e:  # noqa: BLE001
             if collected:
-                pass
+                adaptive.record_success(logical["id"])
             else:
-                failover_history.append({"model": logical["id"],
-                                         "gateway": logical["gateway"],
-                                         "reason": str(e)})
-                continue
+                adaptive.record_failure(logical["id"])
+                ra = _parse_retry_after(str(e))
+                if not patience_used and ra > 0:
+                    patience_used = True
+                    wait_s = min(ra + 1, 20)
+                    yield {"type": "status",
+                           "message": f"Free models are busy - retrying in {int(wait_s)}s..."}
+                    await asyncio.sleep(wait_s)
+                    try:
+                        async for delta in _stream_gateway_model(logical, effective, temperature):
+                            if not announced:
+                                yield {"type": "meta", "model_used": logical["id"],
+                                       "model_name": logical["name"], "model_badge": logical["badge"],
+                                       "gateway": logical["gateway"],
+                                       "gateway_name": gateway_spec(logical["gateway"])["name"],
+                                       "provider_family": logical["provider_family"],
+                                       "mode": "arkai_free"}
+                                announced = True
+                            collected += delta
+                            yield {"type": "delta", "content": delta}
+                        if collected:
+                            adaptive.record_success(logical["id"])
+                    except Exception:
+                        collected = collected  # keep whatever arrived
+                    if not collected:
+                        failover_history.append({"model": logical["id"],
+                                                 "gateway": logical["gateway"],
+                                                 "reason": str(e)})
+                        continue
+                else:
+                    failover_history.append({"model": logical["id"],
+                                             "gateway": logical["gateway"],
+                                             "reason": str(e)})
+                    continue
         tried = list(exclude_models or []) + [logical["id"]]
         remaining = ranked_models_for_intent(intent, exclude=tried)
         yield _done({
             "response": collected, "model_used": logical["id"],
             "model_name": logical["name"], "model_badge": logical["badge"],
             "gateway": logical["gateway"],
-            "gateway_name": FREE_GATEWAYS[logical["gateway"]]["name"],
+            "gateway_name": gateway_spec(logical["gateway"])["name"],
             "provider_family": logical["provider_family"],
             "provider_status": "success", "status": "success", "mode": "arkai_free",
             "failover_count": len(failover_history),

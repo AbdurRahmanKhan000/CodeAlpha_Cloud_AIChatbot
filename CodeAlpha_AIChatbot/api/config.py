@@ -86,6 +86,36 @@ MODEL_CATALOG: List[Dict[str, Any]] = [
         "strengths": ["general", "math_logic", "creative"],
         "description": "The same open-weight GPT-OSS family through a second gateway - a genuinely different route for Regenerate.",
     },
+    {
+        "id": "llm7/codestral",
+        "gateway": "llm7",
+        "upstream_model": "codestral-latest",
+        "name": "Codestral",
+        "provider_family": "Mistral AI",
+        "badge": "Code Specialist",
+        "strengths": ["code", "math_logic"],
+        "description": "Mistral's code-specialised model via LLM7. Elite for programming, debugging and code review.",
+    },
+    {
+        "id": "llm7/mistral-nemo",
+        "gateway": "llm7",
+        "upstream_model": "mistral-Nemo-Instruct-2407",
+        "name": "Mistral Nemo",
+        "provider_family": "Mistral AI",
+        "badge": "Fast & Creative",
+        "strengths": ["creative", "general", "code"],
+        "description": "Mistral Nemo 12B via LLM7. Quick, personable, strong at writing and everyday questions.",
+    },
+    {
+        "id": "llm7/nemotron-3-nano",
+        "gateway": "llm7",
+        "upstream_model": "nemotron-3-nano:30b",
+        "name": "Nemotron 3 Nano",
+        "provider_family": "NVIDIA",
+        "badge": "Fast Reasoning",
+        "strengths": ["math_logic", "general", "code"],
+        "description": "NVIDIA Nemotron 3 Nano 30B via LLM7. Efficient reasoning model, great for logic and analysis.",
+    },
 ]
 
 MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {m["id"]: m for m in MODEL_CATALOG}
@@ -95,27 +125,39 @@ MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {m["id"]: m for m in MODEL_CATALOG}
 INTENT_RANKINGS: Dict[str, List[str]] = {
     "code": [
         "llm7/deepseek-v4-flash",
+        "llm7/codestral",
         "pollinations/gpt-oss-20b",
+        "llm7/nemotron-3-nano",
         "llm7/glm-5.3-flash",
         "llm7/gpt-oss-20b",
+        "llm7/mistral-nemo",
     ],
     "math_logic": [
         "llm7/deepseek-v4-flash",
         "pollinations/gpt-oss-20b",
+        "llm7/nemotron-3-nano",
         "llm7/gpt-oss-20b",
+        "llm7/codestral",
         "llm7/glm-5.3-flash",
+        "llm7/mistral-nemo",
     ],
     "creative": [
         "llm7/glm-5.3-flash",
+        "llm7/mistral-nemo",
         "pollinations/gpt-oss-20b",
-        "llm7/gpt-oss-20b",
         "llm7/deepseek-v4-flash",
+        "llm7/nemotron-3-nano",
+        "llm7/gpt-oss-20b",
+        "llm7/codestral",
     ],
     "general": [
         "pollinations/gpt-oss-20b",
         "llm7/glm-5.3-flash",
+        "llm7/mistral-nemo",
         "llm7/deepseek-v4-flash",
+        "llm7/nemotron-3-nano",
         "llm7/gpt-oss-20b",
+        "llm7/codestral",
     ],
 }
 
@@ -190,6 +232,74 @@ def detect_provider_from_key(key: str = "", explicit_provider: str = "") -> str:
     return "openai"
 
 
+# ------------------------------------------------------------ booster house keys (optional)
+# If the OWNER sets a free-tier key as a server env var, arkAI gains extra
+# gateways with their own dedicated quota - invisible to end users, who
+# still need no key. Supported: ARKAI_GROQ_API_KEY / GROQ_API_KEY,
+# ARKAI_LLM7_API_KEY / LLM7_API_KEY, ARKAI_OPENROUTER_API_KEY / OPENROUTER_API_KEY.
+import os as _os
+
+HOUSE_KEYS: Dict[str, str] = {
+    "groq": _os.environ.get("ARKAI_GROQ_API_KEY") or _os.environ.get("GROQ_API_KEY") or "",
+    "llm7": _os.environ.get("ARKAI_LLM7_API_KEY") or _os.environ.get("LLM7_API_KEY") or "",
+    "openrouter": _os.environ.get("ARKAI_OPENROUTER_API_KEY") or _os.environ.get("OPENROUTER_API_KEY") or "",
+}
+
+HOUSE_GATEWAYS: Dict[str, Dict[str, Any]] = {
+    "house_groq": {"name": "Groq (house key)", "endpoint": "https://api.groq.com/openai/v1/chat/completions", "key_env": "groq", "timeout_seconds": 30.0},
+    "llm7_key": {"name": "LLM7 (house key)", "endpoint": "https://api.llm7.io/v1/chat/completions", "key_env": "llm7", "timeout_seconds": 30.0},
+    "house_openrouter": {"name": "OpenRouter (house key)", "endpoint": "https://openrouter.ai/api/v1/chat/completions", "key_env": "openrouter", "timeout_seconds": 45.0},
+}
+
+
+def house_models() -> List[Dict[str, Any]]:
+    """Logical models backed by owner-provided keys (only when configured)."""
+    out: List[Dict[str, Any]] = []
+    if HOUSE_KEYS["groq"]:
+        out += [
+            {"id": "house/groq-llama-3.3-70b", "gateway": "house_groq", "upstream_model": "llama-3.3-70b-versatile",
+             "name": "Llama 3.3 70B (Groq)", "provider_family": "Meta (via Groq)", "badge": "House Key · Fast",
+             "strengths": ["general", "creative", "code", "math_logic"],
+             "description": "Meta Llama 3.3 70B on Groq's ultra-fast inference, via the owner's booster key."},
+            {"id": "house/groq-llama-3.1-8b", "gateway": "house_groq", "upstream_model": "llama-3.1-8b-instant",
+             "name": "Llama 3.1 8B Instant (Groq)", "provider_family": "Meta (via Groq)", "badge": "House Key · Instant",
+             "strengths": ["general", "creative"],
+             "description": "Near-instant Llama 3.1 8B on Groq, via the owner's booster key."},
+        ]
+    if HOUSE_KEYS["llm7"]:
+        for src in MODEL_CATALOG:
+            if src["gateway"] == "llm7":
+                out.append({**src, "id": "llm7key/" + src["id"].split("/", 1)[1],
+                            "gateway": "llm7_key",
+                            "name": src["name"] + " · Key",
+                            "description": src["description"] + " (Dedicated-quota route via owner's LLM7 key.)"})
+    if HOUSE_KEYS["openrouter"]:
+        out += [
+            {"id": "house/openrouter-llama-free", "gateway": "house_openrouter", "upstream_model": "meta-llama/llama-3.3-70b-instruct:free",
+             "name": "Llama 3.3 70B (OpenRouter Free)", "provider_family": "Meta (via OpenRouter)", "badge": "House Key · Free",
+             "strengths": ["general", "creative", "code"],
+             "description": "Free Llama 3.3 70B route on OpenRouter via the owner's key."},
+            {"id": "house/openrouter-deepseek-r1-free", "gateway": "house_openrouter", "upstream_model": "deepseek/deepseek-r1:free",
+             "name": "DeepSeek R1 (OpenRouter Free)", "provider_family": "DeepSeek (via OpenRouter)", "badge": "House Key · Reasoning",
+             "strengths": ["math_logic", "code"],
+             "description": "Free DeepSeek R1 reasoning route on OpenRouter via the owner's key."},
+        ]
+    return out
+
+
+def gateway_spec(gateway_id: str) -> Dict[str, Any]:
+    """Endpoint + auth for any gateway id (free or house)."""
+    if gateway_id in FREE_GATEWAYS:
+        return {**FREE_GATEWAYS[gateway_id], "auth_header": None}
+    spec = HOUSE_GATEWAYS[gateway_id]
+    key = HOUSE_KEYS[spec["key_env"]]
+    return {**spec, "auth_header": {"Authorization": f"Bearer {key}"} if key else None}
+
+
+def all_models() -> List[Dict[str, Any]]:
+    return MODEL_CATALOG + house_models()
+
+
 def ranked_models_for_intent(intent: str, exclude: List[str] = None) -> List[Dict[str, Any]]:
     """Best-first logical models for an intent, skipping excluded ids."""
     exclude_set = set(exclude or [])
@@ -199,6 +309,12 @@ def ranked_models_for_intent(intent: str, exclude: List[str] = None) -> List[Dic
     for m in MODEL_CATALOG:
         if m["id"] not in ranking:
             ordered.append(m)
+    # Booster house models (dedicated quota) go first, best strength match first
+    houses = house_models()
+    if houses:
+        strong = [m for m in houses if intent in (m.get("strengths") or [])]
+        rest = [m for m in houses if m not in strong]
+        ordered = strong + rest + ordered
     return [m for m in ordered if m["id"] not in exclude_set]
 
 
