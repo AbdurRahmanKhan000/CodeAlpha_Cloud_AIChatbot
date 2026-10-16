@@ -459,14 +459,17 @@ async function handleTryNextModel(assistantMsgIdx) {
 
   if (!userQuery) return;
 
-  const currentModel = assistantMsg.model_used || 'google/gemini-2.0-flash-lite-001:free';
-  const nextModel = assistantMsg.next_fallback_model || null;
+  const currentModel = assistantMsg.model_used || 'pollinations/gpt-oss-20b';
+  const nextModel = assistantMsg.next_model || null;
 
-  // Trigger regeneration
-  await executeChatRequest(userQuery, nextModel, assistantMsgIdx);
+  // Trigger regeneration on the next best model that has not answered yet
+  await executeChatRequest(userQuery, nextModel, assistantMsgIdx, {
+    current_model: currentModel,
+    tried_models: assistantMsg.tried_models || [currentModel],
+  });
 }
 
-async function executeChatRequest(userQuery, forceModel = null, replaceIdx = null) {
+async function executeChatRequest(userQuery, forceModel = null, replaceIdx = null, regenMeta = null) {
   isGenerating = true;
   updateSendButtonState(true);
 
@@ -491,16 +494,19 @@ async function executeChatRequest(userQuery, forceModel = null, replaceIdx = nul
   renderChatMessages();
 
   try {
+    const isRegen = replaceIdx !== null;
     const payload = {
       message: userQuery,
       history: chat.messages.filter(m => m !== placeholderMsg).slice(-6),
       system_prompt: effectiveSystemPrompt,
       force_model: forceModel,
+      current_model: isRegen ? (regenMeta?.current_model || undefined) : undefined,
+      tried_models: isRegen ? (regenMeta?.tried_models || []) : undefined,
       api_key_override: userSettings.apiKey || undefined,
       temperature: userSettings.temperature || 0.7,
     };
 
-    const res = await fetch('/api/chat', {
+    const res = await fetch(isRegen ? '/api/regenerate' : '/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -519,7 +525,9 @@ async function executeChatRequest(userQuery, forceModel = null, replaceIdx = nul
       provider_status: data.provider_status,
       failover_count: data.failover_count || 0,
       failover_history: data.failover_history || [],
-      next_fallback_model: data.next_fallback_model,
+      next_fallback_model: data.next_model,
+      next_model: data.next_model,
+      tried_models: data.tried_models || [],
       routing_time_ms: data.routing_time_ms,
       total_latency_ms: data.total_latency_ms,
       timestamp: Date.now(),
