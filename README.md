@@ -1,75 +1,157 @@
-# 🚀 arkAI — Orchestrated Chatbot (Free Multi-Model AI)
+<div align="center">
 
-**ARK Ecosystem | CodeAlpha_AIChatbot**
+# 🚀 arkAI — The Orchestrated AI Chatbot
 
-arkAI is an **orchestrated chatbot**: it is **not tied to any single AI company** and needs **no API key at all** to work. Every question is classified locally in **under 2 milliseconds**, then dispatched to the **best available free AI model** for that kind of question, through free anonymous AI gateways. If a model is busy, arkAI automatically cascades to the next best model — the conversation never drops.
+### One chatbot. Many AI brains. **Zero API key needed.**
+
+[![Version](https://img.shields.io/badge/version-5.1-indigo)](https://github.com/AbdurRahmanKhan000/CodeAlpha_Cloud_AIChatbot)
+[![Models](https://img.shields.io/badge/free%20models-7%20logical%20%C2%B7%205%20families-success)](https://github.com/AbdurRahmanKhan000/CodeAlpha_Cloud_AIChatbot)
+[![API Key](https://img.shields.io/badge/API%20key-NOT%20required-brightgreen)](https://github.com/AbdurRahmanKhan000/CodeAlpha_Cloud_AIChatbot)
+[![Routing](https://img.shields.io/badge/routing-%3C2ms%20heuristic-orange)](https://github.com/AbdurRahmanKhan000/CodeAlpha_Cloud_AIChatbot)
+[![Stack](https://img.shields.io/badge/stack-React%2019%20%C2%B7%20FastAPI%20%C2%B7%20TypeScript-blue)](https://github.com/AbdurRahmanKhan000/CodeAlpha_Cloud_AIChatbot)
+[![License](https://img.shields.io/badge/license-MIT-lightgrey)](https://github.com/AbdurRahmanKhan000/CodeAlpha_Cloud_AIChatbot)
+
+**arkAI is not tied to any single AI company.** Every question is classified locally in **under 2 milliseconds**, then dispatched to the **best available free AI model** for that kind of question. If a model is busy, arkAI cascades to the next one — and it **learns** from anonymous feedback which models actually deserve your questions.
+
+[✨ Features](#-features) · [🧠 Model Pool](#-the-free-model-pool) · [🏗️ Architecture](#️-architecture) · [⚙️ Backend](#️-backend-features) · [🔌 API](#-api-reference) · [🚀 Run Locally](#-run-locally)
+
+</div>
 
 ---
 
-## ✨ What changed in v4
+## ✨ Features
 
-| Feature | How it works |
-| :--- | :--- |
-| **No API dependency** | Default mode uses free anonymous gateways — **Pollinations** and **LLM7** — not Gemini, not OpenRouter, not any single vendor. Zero keys, zero cost, zero setup for every user. |
-| **Best model per question** | A sub-2ms heuristic router classifies each prompt (code / maths & logic / creative / general) and ranks the free model catalog per intent. Code goes to DeepSeek first, general questions to GPT-OSS, creative work to GLM Flash, and so on. |
-| **Regenerate (model hop)** | Every AI reply has a **Regenerate** button. It re-asks the *same* question on the **next best model that has not answered it yet** — repeated clicks keep hopping to fresh models, never a repeat. |
-| **Download any reply** | Every AI reply can be downloaded as **PDF** or **Word (.docx)**. Both are professionally designed with the **arkAI logo at the top of every page**, the model used, the question, and page numbers. |
-| **Model always shown** | Every answer ends with the exact model (and gateway) that produced it. |
-| **Clean Settings** | One choice: **arkAI Models** (free, orchestrated, recommended) *or* **Use My Own API Key** — in which case **only** that provider's models are used. No deployment steps, no vendor guides. |
-
-## 🧠 Free model catalog (default mode)
-
-| Logical model | Gateway | Best at |
+| | Feature | How it works |
 | :--- | :--- | :--- |
-| GPT-OSS 20B | Pollinations (anonymous) | Reasoning, general, maths |
-| DeepSeek V4 Flash | LLM7 (anonymous) | Code, deep reasoning |
-| GLM 5.3 Flash | LLM7 (anonymous) | General, creative, speed |
-| GPT-OSS 20B (LLM7 route) | LLM7 (anonymous) | A genuinely different route for Regenerate |
+| 🆓 | **No API key, no cost, no setup** | Default mode runs on free anonymous gateways — **Pollinations** and **LLM7**. Not Gemini-locked, not OpenRouter-locked, not any single vendor. |
+| 🧭 | **Best model per question** | A sub-2ms heuristic router classifies every prompt (**code / math & logic / creative / general**) and ranks the model pool per intent. Code goes to DeepSeek & Codestral, creative work to GLM & Mistral, reasoning to GPT-OSS & Nemotron. |
+| ⚡ | **Instant local answers** | A built-in **pattern engine** answers arkAI's own FAQs (pricing, hours, services, refunds, SLA, security, API limits…) in **microseconds** — no network call at all. |
+| 🔄 | **Regenerate = a different brain** | Every reply has **Regenerate**: the same question is re-asked on the **next best model that hasn't answered it yet**. Repeated clicks keep hopping — never a repeat — and your previous answer is **kept** if every other model is momentarily busy. |
+| 📥 | **Download any reply** | Export any answer as a beautifully designed **PDF** or **Word (.docx)** — arkAI logo on **every page**, real tables, clean math, question + model + page numbers included. |
+| 🏷️ | **Model always shown** | Every answer ends with the exact model and gateway that produced it. No mystery meat. |
+| 🎛️ | **Two clean modes in Settings** | **arkAI Models** (free & orchestrated) *or* **Your Own API Key** — paste a key and arkAI uses **only that provider's** models (OpenAI, OpenRouter, DeepSeek, Grok, Groq/Meta, Qwen, Gemini, Claude — auto-detected from the key). |
+| 📡 | **True token streaming** | Answers stream in token-by-token like professional chatbots, with a **Stop** button, smart auto-scroll, and clean rendering: **real tables, KaTeX maths, code blocks with copy buttons**. |
+| 🧠 | **It learns (privately)** | 👍/👎 and Regenerate clicks feed an **anonymous aggregate scoreboard** on the server — counters only, *never* your questions or answers — and the router re-ranks models by what's actually winning. Nothing is stored on your device. |
 
-> Gateways are interchangeable: adding a new free gateway or model is a one-line catalog entry in `api/config.py` / `src/orchestrator.ts`. Anonymous gateway quotas are shared per IP — when one is exhausted, the cascade simply moves on.
+---
+
+## 🧠 The Free Model Pool
+
+Seven logical models, five AI families, two anonymous gateways — plus optional owner "booster" keys that add dedicated-quota routes invisible to end users.
+
+| # | Logical model | Family | Gateway | Best at |
+| :-: | :--- | :--- | :--- | :--- |
+| 1 | **GPT-OSS 20B** | OpenAI (open weights) | Pollinations | Reasoning, general, maths |
+| 2 | **DeepSeek V4 Flash** | DeepSeek | LLM7 | Code, deep reasoning |
+| 3 | **GLM 5.3 Flash** | Z.ai (GLM) | LLM7 | General, creative, speed |
+| 4 | **GPT-OSS 20B (LLM7 route)** | OpenAI (open weights) | LLM7 | A genuinely different route for Regenerate |
+| 5 | **Codestral** | Mistral AI | LLM7 | Code specialist |
+| 6 | **Mistral Nemo** | Mistral AI | LLM7 | Creative writing, everyday questions |
+| 7 | **Nemotron 3 Nano 30B** | NVIDIA | LLM7 | Fast reasoning, logic, analysis |
+
+> 🔑 **Booster house keys (optional, owner-only):** if the site owner sets `ARKAI_GROQ_API_KEY`, `ARKAI_LLM7_API_KEY`, or `ARKAI_OPENROUTER_API_KEY` as server environment variables, arkAI silently gains extra models on those dedicated quotas (e.g. Llama 3.3 70B on Groq, the OpenRouter free-model router, Nemotron 3 Super 120B). End users still need **nothing**.
+
+---
 
 ## 🏗️ Architecture
 
+```mermaid
+flowchart TD
+    U["👤 User"] --> UI["⚛️ React 19 UI<br/>src/App.tsx — streaming, Markdown + KaTeX,<br/>PDF/Word export, Settings"]
+    UI -->|"POST /api/chat · SSE"| API
+    UI -->|"POST /api/regenerate"| API
+    UI -->|"POST /api/feedback 👍👎"| API
+    API["🐍 FastAPI Orchestrator (deployed on Vercel)<br/>api/index.py · api/router.py · api/config.py"]
+    API --> P["⚡ Pattern Engine<br/>api/patterns.py — instant FAQ answers"]
+    API --> C["🧭 Heuristic Classifier &lt;2ms<br/>code · math_logic · creative · general"]
+    C --> A["🛡️ Adaptive Layer — api/adaptive.py<br/>circuit breaker · learning scoreboard"]
+    A --> G1["🌐 Pollinations (anonymous)"]
+    A --> G2["🌐 LLM7 (anonymous)"]
+    A --> G3["🔑 Booster gateways (owner keys, optional)"]
+    A --> K["🎛️ Own-Key mode (user's provider only)"]
 ```
-User → React UI (src/App.tsx)
-        │  POST /api/chat        (Regenerate → POST /api/regenerate)
-        ▼
-FastAPI orchestrator (api/)  ── also mirrored in TypeScript (server.ts + src/orchestrator.ts) for local dev
-        │  1. Local pattern engine (data/patterns.json) — instant FAQ answers
-        │  2. Heuristic classifier (<2ms) — code / math_logic / creative / general
-        │  3. Ranked free models for the intent → call gateway → cascade on 429/503/timeout/quota
-        ▼
-Pollinations · LLM7   (free, anonymous, no key)
-        — or, in Own-Key mode only: the user's own provider, exclusively —
-```
 
-- **Frontend:** React 19 + Vite + Tailwind (`src/App.tsx`), export engine in `src/export.ts` (jsPDF + docx).
-- **Backend:** FastAPI (`api/index.py`, `api/router.py`, `api/config.py`), deployed as a Vercel service from `CodeAlpha_AIChatbot/` (kept in sync with the root `api/`).
-- **Endpoints:** `GET /api/health`, `GET /api/models`, `POST /api/route-preview`, `POST /api/chat`, `POST /api/regenerate` (body: `message`, `current_model`, `tried_models[]`).
-- **Every response** includes `model_used`, `model_name`, `gateway_name`, `routing_time_ms`, `total_latency_ms`, `failover_history`, `next_model`, `tried_models`.
+> The entire orchestration logic exists **twice, in sync**: Python (`api/`) — what Vercel deploys — and TypeScript (`server.ts` + `src/orchestrator.ts`) for local development. Same rankings, same cascade, same behaviour.
 
-## 🔑 Own-Key mode (optional)
+---
 
-In **Settings → Use My Own API Key**, a user may paste a key from OpenAI, Claude, Gemini, Grok, DeepSeek, Meta (Groq), Qwen or OpenRouter. The provider is auto-detected from the key, and arkAI then uses **only that provider's models**. The key is stored only in the user's browser. Leaving Settings on **arkAI Models** restores free orchestration instantly.
+## ⚙️ Backend Features
 
-## 🧪 Tests
+The invisible engineering that keeps arkAI fast and dependable:
+
+| Feature | What it does |
+| :--- | :--- |
+| **Cascade failover** | Models are tried best-first; any failure (429 quota, 503, timeout, empty stream) moves instantly to the next model. The conversation never drops. |
+| **First-token deadline (7s)** | A model that can't produce its *first token* within **7 seconds** is abandoned and the cascade moves on. This eliminated the 30–60s stalls caused by waiting out full gateway timeouts. Once tokens flow, a 30s idle gap is tolerated. |
+| **Circuit breaker** | A model that fails **3 times in a row** is benched for **3 minutes** (per server instance), so requests stop wasting time on a dead quota. A single success restores it. |
+| **Retry-after patience** | When a gateway replies *"retry after N seconds"*, arkAI waits and retries — but **only when that model is the last one left**, capped at 12s, and the UI shows a *"Free models are busy — retrying…"* notice so it never looks stuck. |
+| **Learning scoreboard** | Anonymous counters per *(intent, model)*: thumbs up/down + regenerate-away events. Laplace-smoothed win-rates gently re-rank the router (max ~1 position shift) — arkAI routes smarter the more it's used. Counters live in server memory and **auto-persist** to Upstash/Vercel KV when `UPSTASH_REDIS_REST_URL/TOKEN` or `KV_REST_API_URL/TOKEN` are set. **No prompts, answers, or user data are ever stored.** |
+| **Pattern engine** | `data/patterns.json` (9 intents, 80+ triggers) with exact → regex → fuzzy matching. Powers instant answers *and* `/api/match` + `/api/patterns`. Regenerate deliberately skips it so you always get a real AI model on re-ask. |
+| **Dual-mirrored backends** | Python FastAPI (production) + TypeScript Express (local) implement identical logic; a shared test suite keeps them honest. |
+| **Zero server keys by default** | The free pool needs no credentials at all. User-supplied own-keys are used only for that request's provider and are never stored server-side. |
+
+Every chat response also carries full telemetry: `model_used`, `model_name`, `gateway_name`, `routing_time_ms`, `total_latency_ms`, `failover_history`, `next_model`, and `tried_models`.
+
+---
+
+## 🔌 API Reference
+
+| Method & path | Purpose |
+| :--- | :--- |
+| `POST /api/chat` | Chat (JSON, or **SSE streaming** with `"stream": true`: `routing → meta → delta* → done`) |
+| `POST /api/regenerate` | Same prompt on the next untried model (`current_model`, `tried_models[]`) |
+| `POST /api/feedback` | Anonymous learning signal: `{ model_used, event: "up" \| "down" \| "regen", intent }` |
+| `GET /api/learning` | Learning scoreboard + circuit-breaker snapshot |
+| `GET /api/health` | Status, version, model count, patterns indexed, learning state |
+| `GET /api/models` | Full model catalog (free pool + active boosters) |
+| `POST /api/route-preview` | See which model a prompt would be routed to, and the routing time |
+| `POST /api/match` · `GET /api/patterns` | Pattern-engine lookup and intent catalogue |
+
+---
+
+## 🖥️ Frontend Highlights
+
+- **Streaming UI** with Stop button, per-message status notices, and smart auto-scroll (never yanks you away from what you're reading)
+- **Professional rendering** — one consistent font, GFM tables, KaTeX equations, code blocks with copy buttons; partial Markdown is healed live while streaming
+- **Branded exports** — PDF (jsPDF) & Word (docx) with the arkAI logo on every page, real table grids, and maths converted to clean text (never garbled glyphs)
+- **Thoughtful UX guards** — *"Are you sure?"* confirmations before deleting a chat or clearing all, full-screen Settings with **✕ / Back to Chat**, hover message actions, rename via the sidebar **⋯** menu
+- **Dark & light themes**, multiple conversations, follow-up suggestion chips
+
+---
+
+## 🚀 Run Locally
 
 ```bash
-npm test                                   # TypeScript suites (needs the dev server for endpoint suites)
-python3 -m unittest tests/test_router.py   # Router, catalog, regenerate-hop logic
-python3 -m unittest tests/test_audit.py    # Full readiness audit
-```
+# Frontend + TypeScript backend (port 3000)
+bun install        # or: npm install --legacy-peer-deps
+bun run dev        # or: npx tsx server.ts
 
-## 🚀 Run locally
-
-```bash
-npm install --legacy-peer-deps
-npm run dev        # React + Express orchestrator on :3000
-# or the Python backend:
+# Python backend (same API, port 8000)
 pip install -r requirements.txt
 uvicorn api.index:app --port 8000
 ```
 
-No environment variables are required. Deploy to Vercel as before — the owner republishes; no keys need to be configured in the project settings for the default free mode.
+No environment variables are required for the default free mode.
 
-**License:** MIT
+## ✅ Testing
+
+```bash
+npx tsx tests/run_all_tests.ts     # 66 checks: routing, patterns, failover,
+                                   # adaptive learning, latency discipline,
+                                   # exports, themes + the Python suites
+python3 -m unittest discover tests # 32 Python tests (router, audit, v5, latency)
+bun run build                      # production build must stay green
+```
+
+## ☁️ Deployment
+
+Deployed on **Vercel** as two services from `vercel.json`: the Vite app at the root and the FastAPI service from `CodeAlpha_AIChatbot/`. Optional environment variables: `ARKAI_GROQ_API_KEY`, `ARKAI_LLM7_API_KEY`, `ARKAI_OPENROUTER_API_KEY` (booster quotas) and `UPSTASH_REDIS_REST_URL/TOKEN` or `KV_REST_API_URL/TOKEN` (learning persistence).
+
+---
+
+<div align="center">
+
+**arkAI** · ARK Ecosystem · CodeAlpha_Cloud_AIChatbot · **License: MIT**
+*Many models. One conversation. No keys, no lock-in, no dead ends.*
+
+</div>
