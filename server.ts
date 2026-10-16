@@ -251,7 +251,7 @@ app.get('/api/health', (req: Request, res: Response) => {
   res.json({
     status: 'operational',
     engine: 'arkAI Orchestrated Chatbot',
-    version: '5.0.0',
+    version: '5.1.0',
     api_key_required: false,
     gateways: Object.keys(FREE_GATEWAYS),
     models_count: allModels().length,

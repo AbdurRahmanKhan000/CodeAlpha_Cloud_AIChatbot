@@ -114,7 +114,7 @@ except ImportError:
 app = FastAPI(
     title="arkAI Orchestrated Chatbot",
     description="Free multi-model orchestration: <2ms heuristic routing across anonymous AI gateways (Pollinations + LLM7), cascade failover, model-hopping Regenerate, optional Own-Key mode. No vendor API required.",
-    version="5.0.0",
+    version="5.1.0",
 )
 
 app.add_middleware(
@@ -171,7 +171,7 @@ async def health_check():
         "status": "operational",
         "engine": "arkAI Orchestrated Chatbot",
         "architecture": "Free multi-gateway orchestration (no API key required)",
-        "version": "5.0.0",
+        "version": "5.1.0",
         "api_key_required": False,
         "gateways": {k: {"name": v["name"], "endpoint": v["endpoint"]} for k, v in FREE_GATEWAYS.items()},
         "models_count": len(all_models()),
