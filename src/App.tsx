@@ -64,6 +64,7 @@ interface ChatMessage {
   triedModels?: string[];
   nextModel?: string | null;
   isStreaming?: boolean;
+  notice?: string;
 }
 
 interface Conversation {
@@ -346,6 +347,8 @@ export default function App() {
         const ev = JSON.parse(line.slice(5));
         if (ev.type === 'delta' && ev.content) {
           patchMessage(convId, msgId, (m) => ({ content: m.content + ev.content }));
+        } else if (ev.type === 'status' && ev.message) {
+          patchMessage(convId, msgId, { notice: String(ev.message) });
         } else if (ev.type === 'meta') {
           patchMessage(convId, msgId, {
             modelUsed: ev.model_used, modelName: ev.model_name, modelBadge: ev.model_badge,
@@ -378,8 +381,9 @@ export default function App() {
     patchMessage(convId, msgId, (m) => ({
       content: data?.response || m.content,
       isStreaming: false,
+      notice: undefined,
       source: data?.source || 'ai',
-      intent: data?.intent ?? m.intent,
+      intent: data?.prompt_type ?? data?.intent ?? m.intent,
       confidence: data?.confidence ?? m.confidence,
       latencyMs: data?.latency_ms ?? data?.total_latency_ms,
       latencyMicros: data?.latency_micros,
@@ -468,14 +472,34 @@ export default function App() {
     }
   };
 
+  // Anonymous aggregate learning: only (intent, model, event) counters are
+  // sent - never prompts or answers. The server uses them to re-rank models.
+  const sendFeedback = (msg: ChatMessage, event: 'up' | 'down' | 'regen') => {
+    if (!msg.modelUsed || msg.modelUsed === 'none' || msg.modelUsed === 'arkai/local-pattern-engine') return;
+    fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_used: msg.modelUsed, event, intent: msg.intent }),
+    }).catch(() => { /* learning is best-effort */ });
+  };
+
   // Regenerate: same prompt, answered by the NEXT best model (never a repeat)
   const handleRegenerate = async (msg: ChatMessage) => {
     const query = (msg.prompt || '').trim();
     if (!query || regeneratingId || streamingId) return;
+    // Snapshot the current answer: if every other model is busy, the user
+    // keeps this answer instead of losing it to a "busy" message.
+    const prev = {
+      content: msg.content, modelUsed: msg.modelUsed, modelName: msg.modelName,
+      modelBadge: msg.modelBadge, gatewayName: msg.gatewayName, source: msg.source,
+      intent: msg.intent, triedModels: msg.triedModels, nextModel: msg.nextModel,
+      totalLatencyMs: msg.totalLatencyMs,
+    };
+    sendFeedback(msg, 'regen');
     setRegeneratingId(msg.id);
     setStreamingId(msg.id);
     stickRef.current = true;
-    patchMessage(activeConvId, msg.id, { content: '', isStreaming: true });
+    patchMessage(activeConvId, msg.id, { content: '', isStreaming: true, notice: undefined });
     try {
       const data = await streamIntoMessage(activeConvId, msg.id, '/api/regenerate', {
         message: query,
@@ -490,13 +514,22 @@ export default function App() {
           content: m.content
         }))
       });
-      finalizeStreamedMessage(activeConvId, msg.id, data, query);
+      if (!data || data.status === 'exhausted') {
+        patchMessage(activeConvId, msg.id, {
+          ...prev, isStreaming: false,
+          notice: 'Other models are busy right now, so your previous answer was kept. Try Regenerate again in a moment.',
+        });
+      } else {
+        finalizeStreamedMessage(activeConvId, msg.id, data, query);
+      }
     } catch (err: any) {
       const aborted = err?.name === 'AbortError';
-      patchMessage(activeConvId, msg.id, (m) => ({
-        isStreaming: false,
-        content: m.content || (aborted ? '_Generation stopped._' : 'Regenerate could not reach a model just now. Please try again.'),
-      }));
+      patchMessage(activeConvId, msg.id, (m) => (m.content
+        ? { isStreaming: false, content: m.content }
+        : {
+            ...prev, isStreaming: false,
+            notice: aborted ? undefined : 'Regenerate could not reach another model, so your previous answer was kept.',
+          }));
     } finally {
       setRegeneratingId(null);
       setStreamingId(null);
@@ -1209,6 +1242,13 @@ export default function App() {
                           </div>
                         )}
 
+                        {msg.notice && (
+                          <div className="flex items-center gap-1.5 text-[11px] text-amber-500">
+                            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                            <span>{msg.notice}</span>
+                          </div>
+                        )}
+
                         {(msg.modelName || msg.modelUsed) && (
                           <div className={`flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-mono border-t pt-2 ${theme === 'dark' ? 'border-zinc-800/70 text-zinc-400' : 'border-zinc-200 text-zinc-600'}`}>
                             <Bot className="w-3.5 h-3.5 text-indigo-500" />
@@ -1231,7 +1271,7 @@ export default function App() {
                           </button>
 
                           <button
-                            onClick={() => setFeedbackState(prev => ({ ...prev, [msg.id]: 'up' }))}
+                            onClick={() => { if (feedbackState[msg.id] !== 'up') { setFeedbackState(prev => ({ ...prev, [msg.id]: 'up' })); sendFeedback(msg, 'up'); } }}
                             className={`p-1 rounded transition-colors ${
                               feedbackState[msg.id] === 'up'
                                 ? 'text-emerald-500'
@@ -1245,7 +1285,7 @@ export default function App() {
                           </button>
 
                           <button
-                            onClick={() => setFeedbackState(prev => ({ ...prev, [msg.id]: 'down' }))}
+                            onClick={() => { if (feedbackState[msg.id] !== 'down') { setFeedbackState(prev => ({ ...prev, [msg.id]: 'down' })); sendFeedback(msg, 'down'); } }}
                             className={`p-1 rounded transition-colors ${
                               feedbackState[msg.id] === 'down'
                                 ? 'text-rose-500'
