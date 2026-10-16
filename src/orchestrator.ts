@@ -192,3 +192,139 @@ export async function executeOrchestratedChat(opts: {
   }
   return { response: 'All free AI gateways are busy right now. arkAI tried ' + history.length + ' model(s) across Pollinations and LLM7. Please press Regenerate in a moment, or add your own API key in Settings.', model_used: 'none', model_name: 'All free models busy', model_badge: 'Failover Exhausted', gateway: 'none', gateway_name: '-', provider_status: 'exhausted', status: 'exhausted', mode: 'arkai_free', failover_count: history.length, failover_history: history, next_model: null, tried_models: exclude, total_latency_ms: Math.round(Number(process.hrtime.bigint() - overall) / 1_000_000 * 100) / 100 };
 }
+
+// ------------------------------------------------------------ streaming
+export type StreamEvent = { type: string; [key: string]: unknown };
+export interface ChatOptions {
+  messages: ChatTurn[]; intent?: string; excludeModels?: string[];
+  apiKeyOverride?: string; provider?: string; systemPrompt?: string; temperature?: number;
+}
+
+function parseSseDelta(line: string): string {
+  if (!line.startsWith('data:')) return '';
+  const data = line.slice(5).trim();
+  if (!data || data === '[DONE]') return '';
+  try {
+    const obj = JSON.parse(data);
+    const ch = (obj.choices || [])[0];
+    const delta = ch?.delta || ch?.message || {};
+    return delta.content || '';
+  } catch { return ''; }
+}
+
+async function* streamPostLines(url: string, payload: Record<string, unknown>, headers: Record<string, string>, timeoutMs: number): AsyncGenerator<string> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(payload), signal: ctrl.signal });
+    if (!resp.ok || !resp.body) {
+      const body = await resp.text().catch(() => '');
+      throw new Error(`HTTP ${resp.status} ${body.slice(0, 160)}`);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        if (line) yield line;
+      }
+    }
+    if (buffer.trim()) yield buffer.trim();
+  } finally { clearTimeout(timer); }
+}
+
+async function* streamGatewayDeltas(logical: LogicalModel, messages: ChatTurn[], temperature: number): AsyncGenerator<string> {
+  const gw = FREE_GATEWAYS[logical.gateway];
+  let any = false;
+  for await (const line of streamPostLines(gw.endpoint, { model: logical.upstreamModel, messages, temperature, stream: true }, {}, gw.timeoutMs + 60000)) {
+    const d = parseSseDelta(line);
+    if (d) { any = true; yield d; }
+  }
+  if (!any) throw new Error('Empty stream from model');
+}
+
+export async function* executeOrchestratedChatStream(opts: ChatOptions): AsyncGenerator<StreamEvent> {
+  const started = Date.now();
+  const exclude = opts.excludeModels || [];
+  const messages = [...opts.messages];
+  if (opts.systemPrompt && (!messages.length || messages[0].role !== 'system')) {
+    messages.unshift({ role: 'system', content: opts.systemPrompt });
+  }
+  const temperature = opts.temperature ?? 0.7;
+  const done = (r: Record<string, unknown>): StreamEvent => ({ ...r, type: 'done', total_latency_ms: Date.now() - started });
+
+  if ((opts.apiKeyOverride || '').trim()) {
+    const provider = detectProviderFromKey(opts.apiKeyOverride, opts.provider);
+    const spec = OWN_KEY_PROVIDERS[provider];
+    if (provider === 'claude') {
+      const result: any = await executeOrchestratedChat(opts);
+      yield { type: 'meta', model_used: result.model_used, model_name: result.model_name, model_badge: result.model_badge, gateway: provider, gateway_name: spec.name, mode: 'own_key' };
+      if (result.response) yield { type: 'delta', content: result.response };
+      yield done({ ...result });
+      return;
+    }
+    const headers = { Authorization: `Bearer ${opts.apiKeyOverride!.trim()}` };
+    const history: Array<Record<string, unknown>> = [];
+    for (const model of spec.models) {
+      const logicalId = `ownkey/${provider}/${model}`;
+      if (exclude.includes(logicalId) || exclude.includes(model)) continue;
+      let collected = '';
+      try {
+        const gen = streamPostLines(spec.endpoint, { model, messages, temperature, stream: true }, headers, 120000);
+        // pull until first delta so meta is only announced for a model that answers
+        let firstDelta = '';
+        let pending: string[] = [];
+        for await (const line of gen) {
+          const d = parseSseDelta(line);
+          if (d) { firstDelta = d; break; }
+        }
+        if (!firstDelta) throw new Error('Empty stream');
+        yield { type: 'meta', model_used: logicalId, model_name: model, model_badge: spec.name, gateway: provider, gateway_name: spec.name, mode: 'own_key' };
+        collected += firstDelta;
+        yield { type: 'delta', content: firstDelta };
+        for await (const line of gen) {
+          const d = parseSseDelta(line);
+          if (d) { collected += d; yield { type: 'delta', content: d }; }
+        }
+        void pending;
+      } catch (e) {
+        if (!collected) { history.push({ model: logicalId, reason: String(e) }); continue; }
+      }
+      const ranked = spec.models.map(m => `ownkey/${provider}/${m}`);
+      const tried = [...exclude, logicalId];
+      const remaining = ranked.filter(m => !tried.includes(m));
+      yield done({ response: collected, model_used: logicalId, model_name: model, model_badge: spec.name, gateway: provider, gateway_name: spec.name, provider_status: 'success', status: 'success', mode: 'own_key', failover_count: history.length, failover_history: history, next_model: remaining[0] || null, tried_models: tried });
+      return;
+    }
+    yield done({ response: "Your API key's provider did not return an answer. Check the key and provider in Settings, then try again.", model_used: `ownkey/${provider}`, model_name: spec.name, model_badge: spec.name, gateway: provider, gateway_name: spec.name, provider_status: 'exhausted', status: 'exhausted', mode: 'own_key', failover_count: history.length, failover_history: history, next_model: null, tried_models: exclude });
+    return;
+  }
+
+  const ranked = rankedModelsForIntent(opts.intent || 'general', exclude);
+  const failover: Array<Record<string, unknown>> = [];
+  for (const logical of ranked) {
+    let collected = '';
+    try {
+      const gen = streamGatewayDeltas(logical, messages, temperature);
+      let first = await gen.next();
+      if (first.done || !first.value) throw new Error('Empty stream');
+      yield { type: 'meta', model_used: logical.id, model_name: logical.name, model_badge: logical.badge, gateway: logical.gateway, gateway_name: FREE_GATEWAYS[logical.gateway].name, provider_family: logical.providerFamily, mode: 'arkai_free' };
+      collected += first.value;
+      yield { type: 'delta', content: first.value };
+      for await (const d of gen) { collected += d; yield { type: 'delta', content: d }; }
+    } catch (e) {
+      if (!collected) { failover.push({ model: logical.id, gateway: logical.gateway, reason: String(e) }); continue; }
+    }
+    const tried = [...exclude, logical.id];
+    const remaining = rankedModelsForIntent(opts.intent || 'general', tried);
+    yield done({ response: collected, model_used: logical.id, model_name: logical.name, model_badge: logical.badge, gateway: logical.gateway, gateway_name: FREE_GATEWAYS[logical.gateway].name, provider_family: logical.providerFamily, provider_status: 'success', status: 'success', mode: 'arkai_free', failover_count: failover.length, failover_history: failover, next_model: remaining[0]?.id || null, next_model_name: remaining[0]?.name || null, tried_models: tried });
+    return;
+  }
+  yield done({ response: `All free AI gateways are busy right now. arkAI tried ${failover.length} model(s) across Pollinations and LLM7. Please press Regenerate in a moment, or add your own API key in Settings.`, model_used: 'none', model_name: 'All free models busy', model_badge: 'Failover Exhausted', gateway: 'none', gateway_name: '-', provider_status: 'exhausted', status: 'exhausted', mode: 'arkai_free', failover_count: failover.length, failover_history: failover, next_model: null, tried_models: exclude });
+}

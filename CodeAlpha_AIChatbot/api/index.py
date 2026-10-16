@@ -6,11 +6,12 @@ ARK Ecosystem - High-Speed Pure OpenRouter Orchestration Platform
 import sys
 import os
 import time
+import json
 from typing import List, Dict, Any, Optional
 try:
     from fastapi import FastAPI, APIRouter, Request, status
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import JSONResponse, HTMLResponse
+    from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
     from pydantic import BaseModel, Field
 except ImportError:
     # Graceful standard library ASGI compatibility shim for test environments without pip
@@ -98,7 +99,7 @@ try:
         MODEL_CATALOG, MODEL_REGISTRY, FREE_GATEWAYS,
         ranked_models_for_intent, detect_provider_from_key,
     )
-    from api.router import classify_prompt_intent, execute_orchestrated_chat
+    from api.router import classify_prompt_intent, execute_orchestrated_chat, execute_orchestrated_chat_stream
 except ImportError:
     from config import (
         MODEL_CATALOG, MODEL_REGISTRY, FREE_GATEWAYS,
@@ -137,6 +138,7 @@ class ChatRequest(BaseModel):
     api_key_override: Optional[str] = Field(None, description="User's own API key (Own-Key mode)")
     provider: Optional[str] = Field(None, description="Explicit provider for Own-Key mode")
     temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0)
+    stream: Optional[bool] = Field(False, description="Stream tokens via SSE")
 
 class RoutePreviewRequest(BaseModel):
     prompt: str = Field(...)
@@ -150,6 +152,7 @@ class RegenerateRequest(BaseModel):
     api_key_override: Optional[str] = Field(None)
     provider: Optional[str] = Field(None)
     temperature: Optional[float] = Field(0.7)
+    stream: Optional[bool] = Field(False)
 
 # =============================================================================
 # ROUTES (dual-mounted for Vercel & standalone)
@@ -195,6 +198,17 @@ def _format_messages(req) -> List[Dict[str, str]]:
     msgs.append({"role": "user", "content": req.message.strip()})
     return msgs
 
+
+def _sse_response(event_source, routing_time_ms: float):
+    async def gen():
+        yield f"data: {json.dumps({'type': 'routing', 'routing_time_ms': routing_time_ms})}\n\n"
+        async for event in event_source:
+            yield f"data: {json.dumps(event)}\n\n"
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no",
+                                      "Connection": "keep-alive"})
+
 @api_router.post("/chat")
 async def chat_endpoint(req: ChatRequest):
     overall_start_ns = time.perf_counter_ns()
@@ -207,6 +221,12 @@ async def chat_endpoint(req: ChatRequest):
         # intent based - forced model is handled by putting it in exclude logic
         # of regenerate. Here we just note the override in prompt_type.
         prompt_type = "manual_override" if req.force_model else prompt_type
+    if req.stream:
+        intent = prompt_type if prompt_type in ("code", "math_logic", "creative", "general") else classify_prompt_intent(query)[0]
+        return _sse_response(execute_orchestrated_chat_stream(
+            messages=_format_messages(req), intent=intent, exclude_models=exclude,
+            api_key_override=req.api_key_override or "", provider=req.provider or "",
+            system_prompt=req.system_prompt, temperature=req.temperature or 0.7), routing_time_ms)
     result = await execute_orchestrated_chat(
         messages=_format_messages(req), intent=prompt_type if prompt_type in
         ("code", "math_logic", "creative", "general") else
@@ -249,7 +269,7 @@ async def regenerate_with_next_model(req: RegenerateRequest):
     chat_req = ChatRequest(message=req.message, history=req.history,
                            system_prompt=req.system_prompt, exclude_models=tried,
                            api_key_override=req.api_key_override, provider=req.provider,
-                           temperature=req.temperature)
+                           temperature=req.temperature, stream=req.stream)
     return await chat_endpoint(chat_req)
 
 app.include_router(api_router, prefix="/api")

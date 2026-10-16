@@ -299,6 +299,232 @@ async def execute_orchestrated_chat(
     }
 
 
+# ---------------------------------------------------------------- streaming
+class _StreamOpenError(Exception):
+    def __init__(self, status: int, message: str = ""):
+        super().__init__(message or f"HTTP {status}")
+        self.status = status
+
+
+def _parse_sse_delta(line: str) -> str:
+    """Extract delta text from one OpenAI-style SSE line."""
+    if not line.startswith("data:"):
+        return ""
+    data = line[5:].strip()
+    if not data or data == "[DONE]":
+        return ""
+    try:
+        obj = json.loads(data)
+        choices = obj.get("choices") or []
+        if choices:
+            delta = choices[0].get("delta") or choices[0].get("message") or {}
+            return delta.get("content") or ""
+    except Exception:
+        return ""
+    return ""
+
+
+async def _stream_post_lines(url: str, payload: Dict[str, Any],
+                             headers: Dict[str, str], timeout_seconds: float):
+    """Async generator of raw response lines from a streaming POST.
+    Raises _StreamOpenError on HTTP error status (before any content)."""
+    if httpx is not None:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds), trust_env=False) as client:
+            async with client.stream("POST", url, json=payload, headers=headers) as resp:
+                if resp.status_code >= 400:
+                    body = (await resp.aread()).decode("utf-8", errors="replace")[:200]
+                    raise _StreamOpenError(resp.status_code, body)
+                async for line in resp.aiter_lines():
+                    yield line
+        return
+
+    queue: "asyncio.Queue" = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def _sync_worker():
+        try:
+            req = urllib.request.Request(
+                url, data=json.dumps(payload).encode("utf-8"),
+                headers={**headers, "Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=timeout_seconds) as r:
+                for raw in r:
+                    loop.call_soon_threadsafe(queue.put_nowait, raw.decode("utf-8", errors="replace"))
+        except urllib.error.HTTPError as he:
+            body = he.read().decode("utf-8", errors="replace") if he.fp else ""
+            loop.call_soon_threadsafe(queue.put_nowait, _StreamOpenError(he.code, body[:200]))
+        except Exception as e:  # noqa: BLE001
+            loop.call_soon_threadsafe(queue.put_nowait, e)
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    asyncio.get_running_loop().run_in_executor(None, _sync_worker)
+    while True:
+        item = await queue.get()
+        if item is None:
+            return
+        if isinstance(item, Exception):
+            raise item
+        yield item
+
+
+async def _stream_gateway_model(logical, messages, temperature):
+    """Yield deltas from one free gateway model; raises before first delta on failure."""
+    gateway = FREE_GATEWAYS[logical["gateway"]]
+    payload = {"model": logical["upstream_model"], "messages": messages,
+               "temperature": temperature, "stream": True}
+    got_any = False
+    async for line in _stream_post_lines(gateway["endpoint"], payload,
+                                         {"Content-Type": "application/json"},
+                                         gateway["timeout_seconds"] + 60):
+        delta = _parse_sse_delta(line)
+        if delta:
+            got_any = True
+            yield delta
+    if not got_any:
+        raise _StreamOpenError(502, "Empty stream from model")
+
+
+async def execute_orchestrated_chat_stream(
+    messages, intent="general", exclude_models=None, api_key_override="",
+    provider="", system_prompt=None, temperature=0.7,
+):
+    """Streaming twin of execute_orchestrated_chat. Yields event dicts:
+    {type:'meta', ...} once a model starts answering, {type:'delta', content}
+    per token chunk, and a final {type:'done', ...result}."""
+    overall_start_ns = time.perf_counter_ns()
+    effective = list(messages)
+    if system_prompt:
+        if not effective or effective[0].get("role") != "system":
+            effective.insert(0, {"role": "system", "content": system_prompt})
+
+    def _done(result):
+        result["type"] = "done"
+        result["total_latency_ms"] = round(
+            (time.perf_counter_ns() - overall_start_ns) / 1_000_000.0, 2)
+        return result
+
+    # Own-Key mode: OpenAI-compatible providers stream; Claude falls back to
+    # one-shot delivery emitted as a single delta.
+    if (api_key_override or "").strip():
+        detected = detect_provider_from_key(api_key_override, provider)
+        spec = OWN_KEY_PROVIDERS[detected]
+        if detected == "claude":
+            result = await _call_own_key(detected, api_key_override.strip(), effective,
+                                         temperature, exclude_models)
+            ranked = [f"ownkey/{detected}/{m}" for m in spec["models"]]
+            tried = list(exclude_models or []) + [result["model_used"]]
+            remaining = [m for m in ranked if m not in tried]
+            result["next_model"] = remaining[0] if remaining else None
+            result["tried_models"] = tried
+            yield {"type": "meta", "model_used": result["model_used"],
+                   "model_name": result["model_name"], "model_badge": result["model_badge"],
+                   "gateway": detected, "gateway_name": spec["name"], "mode": "own_key"}
+            if result["response"]:
+                yield {"type": "delta", "content": result["response"]}
+            yield _done(result)
+            return
+        headers = {"Authorization": f"Bearer {api_key_override.strip()}",
+                   "Content-Type": "application/json"}
+        history = []
+        for model in spec["models"]:
+            logical_id = f"ownkey/{detected}/{model}"
+            if logical_id in (exclude_models or []) or model in (exclude_models or []):
+                continue
+            payload = {"model": model, "messages": effective,
+                       "temperature": temperature, "stream": True}
+            collected = ""
+            try:
+                yield {"type": "meta", "model_used": logical_id, "model_name": model,
+                       "model_badge": spec["name"], "gateway": detected,
+                       "gateway_name": spec["name"], "mode": "own_key"}
+                async for line in _stream_post_lines(spec["endpoint"], payload, headers, 120):
+                    delta = _parse_sse_delta(line)
+                    if delta:
+                        collected += delta
+                        yield {"type": "delta", "content": delta}
+                if not collected:
+                    raise _StreamOpenError(502, "Empty stream")
+            except Exception as e:  # noqa: BLE001
+                if collected:
+                    pass  # mid-stream failure: keep what arrived
+                else:
+                    history.append({"model": logical_id, "reason": str(e)})
+                    continue
+            ranked = [f"ownkey/{detected}/{m}" for m in spec["models"]]
+            tried = list(exclude_models or []) + [logical_id]
+            remaining = [m for m in ranked if m not in tried]
+            yield _done({
+                "response": collected, "model_used": logical_id, "model_name": model,
+                "model_badge": spec["name"], "gateway": detected,
+                "gateway_name": spec["name"], "provider_status": "success",
+                "status": "success", "mode": "own_key",
+                "failover_count": len(history), "failover_history": history,
+                "next_model": remaining[0] if remaining else None,
+                "tried_models": tried})
+            return
+        yield _done({
+            "response": "Your API key's provider did not return an answer. "
+                        "Check the key and provider in Settings, then try again.",
+            "model_used": f"ownkey/{detected}", "model_name": spec["name"],
+            "model_badge": spec["name"], "gateway": detected,
+            "gateway_name": spec["name"], "provider_status": "exhausted",
+            "status": "exhausted", "mode": "own_key",
+            "failover_count": len(history), "failover_history": history,
+            "next_model": None, "tried_models": list(exclude_models or [])})
+        return
+
+    ranked = ranked_models_for_intent(intent, exclude=exclude_models)
+    failover_history = []
+    for logical in ranked:
+        collected = ""
+        try:
+            announced = False
+            async for delta in _stream_gateway_model(logical, effective, temperature):
+                if not announced:
+                    yield {"type": "meta", "model_used": logical["id"],
+                           "model_name": logical["name"], "model_badge": logical["badge"],
+                           "gateway": logical["gateway"],
+                           "gateway_name": FREE_GATEWAYS[logical["gateway"]]["name"],
+                           "provider_family": logical["provider_family"],
+                           "mode": "arkai_free"}
+                    announced = True
+                collected += delta
+                yield {"type": "delta", "content": delta}
+        except Exception as e:  # noqa: BLE001
+            if collected:
+                pass
+            else:
+                failover_history.append({"model": logical["id"],
+                                         "gateway": logical["gateway"],
+                                         "reason": str(e)})
+                continue
+        tried = list(exclude_models or []) + [logical["id"]]
+        remaining = ranked_models_for_intent(intent, exclude=tried)
+        yield _done({
+            "response": collected, "model_used": logical["id"],
+            "model_name": logical["name"], "model_badge": logical["badge"],
+            "gateway": logical["gateway"],
+            "gateway_name": FREE_GATEWAYS[logical["gateway"]]["name"],
+            "provider_family": logical["provider_family"],
+            "provider_status": "success", "status": "success", "mode": "arkai_free",
+            "failover_count": len(failover_history),
+            "failover_history": failover_history,
+            "next_model": remaining[0]["id"] if remaining else None,
+            "next_model_name": remaining[0]["name"] if remaining else None,
+            "tried_models": tried})
+        return
+
+    yield _done({
+        "response": ("All free AI gateways are busy right now. arkAI tried "
+                     f"{len(failover_history)} model(s) across Pollinations and LLM7. "
+                     "Please press Regenerate in a moment, or add your own API key in Settings."),
+        "model_used": "none", "model_name": "All free models busy",
+        "model_badge": "Failover Exhausted", "gateway": "none", "gateway_name": "-",
+        "provider_status": "exhausted", "status": "exhausted", "mode": "arkai_free",
+        "failover_count": len(failover_history), "failover_history": failover_history,
+        "next_model": None, "tried_models": list(exclude_models or [])})
+
+
 # ------------------------------------------------------- legacy compat alias
 async def execute_openrouter_cascade(messages, primary_model, api_key="",
                                      system_prompt=None, temperature=0.7,

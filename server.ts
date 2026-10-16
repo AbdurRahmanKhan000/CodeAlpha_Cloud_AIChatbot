@@ -10,7 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import { executeOrchestratedChat, classifyPromptIntent, rankedModelsForIntent, MODEL_CATALOG, FREE_GATEWAYS, detectProviderFromKey } from './src/orchestrator.ts';
+import { executeOrchestratedChat, executeOrchestratedChatStream, classifyPromptIntent, rankedModelsForIntent, MODEL_CATALOG, FREE_GATEWAYS, detectProviderFromKey } from './src/orchestrator.ts';
 export { detectProviderFromKey };
 
 dotenv.config();
@@ -336,8 +336,45 @@ async function handleChat(req: Request, res: Response, forceRegenerate = false) 
     content: m.content,
   })) : [];
 
+// 1b) Streaming mode: SSE events (routing -> meta -> delta* -> done)
+  if (body.stream) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    const send = (ev: Record<string, unknown>) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
+    send({ type: 'routing', routing_time_ms: routingTimeMs });
+    if (!forceRegenerate && !ownKey && body.mode !== 'ai_only') {
+      const match = matchIntent(userQuery, body.fuzzy_threshold || 85.0);
+      if (match.matched) {
+        send({ type: 'meta', model_used: 'arkai/local-pattern-engine', model_name: 'arkAI Local Pattern Engine', model_badge: 'Instant · On-device', gateway: 'local', gateway_name: 'Local Pattern Engine', mode: 'arkai_free', source: 'pattern' });
+        send({ type: 'delta', content: match.response });
+        send({ type: 'done', status: 'success', source: 'pattern', response: match.response, intent: match.intent, confidence: match.confidence, model_used: 'arkai/local-pattern-engine', model_name: 'arkAI Local Pattern Engine', model_badge: 'Instant · On-device', gateway: 'local', gateway_name: 'Local Pattern Engine', mode: 'arkai_free', total_latency_ms: Math.round(Number(process.hrtime.bigint() - start) / 1_000_000 * 100) / 100, next_model: classifyPromptIntent(userQuery).assignedModel, tried_models: ['arkai/local-pattern-engine'] });
+        return res.end();
+      }
+    }
+    try {
+      for await (const ev of executeOrchestratedChatStream({
+        messages: [...history, { role: 'user', content: userQuery }],
+        intent: category, excludeModels: exclude,
+        apiKeyOverride: ownKey, provider: body.provider,
+        systemPrompt: body.system_prompt, temperature: body.temperature ?? 0.7,
+      })) {
+        if (ev.type === 'done') {
+          send({ ...ev, prompt_type: category, assigned_model: assignedModel, routing_time_ms: routingTimeMs, latency_ms: ev.total_latency_ms });
+        } else {
+          send(ev as Record<string, unknown>);
+        }
+      }
+    } catch (err: any) {
+      send({ type: 'done', status: 'exhausted', response: 'arkAI could not reach any AI model just now. Please press Regenerate, or try again in a moment.', model_used: 'none', model_name: 'Unavailable', mode, error: err?.message });
+    }
+    return res.end();
+  }
+
   try {
     const result = await executeOrchestratedChat({
+
       messages: [...history, { role: 'user', content: userQuery }],
       intent: category, excludeModels: exclude,
       apiKeyOverride: ownKey, provider: body.provider,
