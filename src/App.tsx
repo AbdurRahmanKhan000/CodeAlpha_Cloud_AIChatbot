@@ -14,9 +14,6 @@ import {
   ThumbsDown,
   Sparkles,
   Zap,
-  Shield,
-  CreditCard,
-  Code,
   Download,
   Settings as SettingsIcon,
   X,
@@ -1112,82 +1109,24 @@ export default function App() {
                 </svg>
               </div>
 
-              <h1 className={`text-2xl md:text-3xl font-bold tracking-tight mb-2 ${theme === 'dark' ? 'text-zinc-100' : 'text-zinc-900'}`}>
+              <h1 className={`text-2xl md:text-3xl font-bold tracking-tight mb-3 ${theme === 'dark' ? 'text-zinc-100' : 'text-zinc-900'}`}>
                 What can I help you with today?
               </h1>
-              <p className={`text-sm max-w-md mb-8 ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>
-                Instant pattern replies, plus free orchestrated AI models picked per question in under 2ms.
-              </p>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full text-left">
-                <button
-                  onClick={() => handleSendMessage('What are your pricing plans?')}
-                  className={`p-3.5 rounded-xl border text-left transition-all group ${
-                    theme === 'dark'
-                      ? 'bg-zinc-900/60 border-zinc-800/80 hover:bg-zinc-800/80 hover:border-zinc-700'
-                      : 'bg-zinc-50 border-zinc-200 hover:bg-white hover:border-zinc-300 shadow-2xs'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <CreditCard className="w-4 h-4 text-zinc-400 group-hover:text-indigo-500" />
-                    <span className={`text-xs font-semibold ${theme === 'dark' ? 'text-zinc-200 group-hover:text-white' : 'text-zinc-900 group-hover:text-black'}`}>Pricing & Plans</span>
-                  </div>
-                  <p className={`text-xs ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>
-                    Transparent tiers from free starter to enterprise SLAs.
-                  </p>
-                </button>
-
-                <button
-                  onClick={() => handleSendMessage('How fast is your response time?')}
-                  className={`p-3.5 rounded-xl border text-left transition-all group ${
-                    theme === 'dark'
-                      ? 'bg-zinc-900/60 border-zinc-800/80 hover:bg-zinc-800/80 hover:border-zinc-700'
-                      : 'bg-zinc-50 border-zinc-200 hover:bg-white hover:border-zinc-300 shadow-2xs'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <Zap className="w-4 h-4 text-zinc-400 group-hover:text-indigo-500" />
-                    <span className={`text-xs font-semibold ${theme === 'dark' ? 'text-zinc-200 group-hover:text-white' : 'text-zinc-900 group-hover:text-black'}`}>Response Speed</span>
-                  </div>
-                  <p className={`text-xs ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>
-                    Sub-millisecond local matcher plus orchestrated free AI models.
-                  </p>
-                </button>
-
-                <button
-                  onClick={() => handleSendMessage('Security & data privacy policy')}
-                  className={`p-3.5 rounded-xl border text-left transition-all group ${
-                    theme === 'dark'
-                      ? 'bg-zinc-900/60 border-zinc-800/80 hover:bg-zinc-800/80 hover:border-zinc-700'
-                      : 'bg-zinc-50 border-zinc-200 hover:bg-white hover:border-zinc-300 shadow-2xs'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <Shield className="w-4 h-4 text-zinc-400 group-hover:text-indigo-500" />
-                    <span className={`text-xs font-semibold ${theme === 'dark' ? 'text-zinc-200 group-hover:text-white' : 'text-zinc-900 group-hover:text-black'}`}>Security & Privacy</span>
-                  </div>
-                  <p className={`text-xs ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>
-                    SOC 2 Type II, zero training on customer data, AES-256.
-                  </p>
-                </button>
-
-                <button
-                  onClick={() => handleSendMessage('What are the API rate limits?')}
-                  className={`p-3.5 rounded-xl border text-left transition-all group ${
-                    theme === 'dark'
-                      ? 'bg-zinc-900/60 border-zinc-800/80 hover:bg-zinc-800/80 hover:border-zinc-700'
-                      : 'bg-zinc-50 border-zinc-200 hover:bg-white hover:border-zinc-300 shadow-2xs'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <Code className="w-4 h-4 text-zinc-400 group-hover:text-indigo-500" />
-                    <span className={`text-xs font-semibold ${theme === 'dark' ? 'text-zinc-200 group-hover:text-white' : 'text-zinc-900 group-hover:text-black'}`}>API Integration</span>
-                  </div>
-                  <p className={`text-xs ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>
-                    Rate limits, quotas, and concurrency allowances.
-                  </p>
-                </button>
+              <div className="flex items-center gap-3 mb-5" aria-hidden="true">
+                <span className={`h-px w-10 bg-gradient-to-r from-transparent ${theme === 'dark' ? 'to-indigo-400/70' : 'to-indigo-500/60'}`} />
+                <Sparkles className="w-4 h-4 text-indigo-500" />
+                <span className={`h-px w-10 bg-gradient-to-l from-transparent ${theme === 'dark' ? 'to-indigo-400/70' : 'to-indigo-500/60'}`} />
               </div>
+
+              <p className={`text-[15px] leading-relaxed max-w-lg mb-4 ${theme === 'dark' ? 'text-zinc-300' : 'text-zinc-700'}`}>
+                Welcome to <strong className="font-semibold text-indigo-500">arkAI</strong> — where many AI minds think as one.
+                Ask anything at all: a tough equation, a tricky bug, a poem, a plan.
+                The best model for your question is already listening, chosen in under two milliseconds.
+              </p>
+              <p className={`text-sm italic max-w-md ${theme === 'dark' ? 'text-zinc-500' : 'text-zinc-500'}`}>
+                No API key. No lock-in. Just answers — beautifully delivered.
+              </p>
             </div>
           ) : (
             /* Active Message Thread */
