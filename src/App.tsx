@@ -28,8 +28,14 @@ import {
   HelpCircle,
   CheckCircle2,
   Eye,
-  EyeOff
+  EyeOff,
+  RefreshCw,
+  FileText,
+  FileType,
+  Bot,
+  ChevronDown
 } from 'lucide-react';
+import { downloadAnswerPdf, downloadAnswerDocx } from './export.ts';
 
 interface ChatMessage {
   id: string;
@@ -42,6 +48,16 @@ interface ChatMessage {
   latencyMs?: number;
   followUpSuggestions?: string[];
   timestamp: string;
+  // Orchestration metadata (shown at the end of every AI reply)
+  prompt?: string;
+  modelUsed?: string;
+  modelName?: string;
+  modelBadge?: string;
+  gatewayName?: string;
+  routingTimeMs?: number;
+  totalLatencyMs?: number;
+  triedModels?: string[];
+  nextModel?: string | null;
 }
 
 interface Conversation {
@@ -52,7 +68,8 @@ interface Conversation {
 }
 
 interface UserSettings {
-  provider: 'auto' | 'gemini' | 'openai' | 'claude' | 'grok' | 'deepseek' | 'meta' | 'qwen';
+  mode: 'arkai' | 'ownkey';
+  provider: 'auto' | 'gemini' | 'openai' | 'claude' | 'grok' | 'deepseek' | 'meta' | 'qwen' | 'openrouter';
   apiKey: string;
   systemPromptPreset: 'concise' | 'developer' | 'support' | 'custom';
   customPrompt: string;
@@ -67,9 +84,9 @@ const SYSTEM_PRESETS: Record<string, string> = {
   support: 'You are arkAI Enterprise Customer Support. Be courteous, empathetic, structured, and guide the user through operational troubleshooting.'
 };
 
-const STORAGE_KEY_SESSIONS = 'arkai_sessions_v4';
-const STORAGE_KEY_SETTINGS = 'arkai_settings_v4';
-const STORAGE_KEY_THEME = 'arkai_theme_v4';
+const STORAGE_KEY_SESSIONS = 'arkai_sessions_v5';
+const STORAGE_KEY_SETTINGS = 'arkai_settings_v5';
+const STORAGE_KEY_THEME = 'arkai_theme_v5';
 
 export default function App() {
   // Navigation View: 'chat' or 'settings'
@@ -94,6 +111,7 @@ export default function App() {
       console.warn('Failed to parse saved settings:', e);
     }
     return {
+      mode: 'arkai',
       provider: 'auto',
       apiKey: '',
       systemPromptPreset: 'developer',
@@ -135,6 +153,9 @@ export default function App() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
   const [feedbackState, setFeedbackState] = useState<Record<string, 'up' | 'down'>>({});
+  const [regeneratingId, setRegeneratingId] = useState<string | null>(null);
+  const [downloadMenuId, setDownloadMenuId] = useState<string | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [statusText] = useState('Fast API Online');
 
   const currentConv = conversations.find(c => c.id === activeConvId) || conversations[0];
@@ -299,9 +320,9 @@ export default function App() {
         body: JSON.stringify({
           message: query,
           session_id: activeConvId,
-          provider: settings.provider === 'auto' ? undefined : settings.provider,
+          provider: settings.mode === 'ownkey' && settings.provider !== 'auto' ? settings.provider : undefined,
           system_prompt: settings.customPrompt,
-          api_key_override: settings.apiKey || undefined,
+          api_key_override: settings.mode === 'ownkey' ? (settings.apiKey || undefined) : undefined,
           temperature: settings.temperature,
           history: messages.slice(-6).map(m => ({
             role: m.role === 'user' ? 'user' : 'model',
@@ -321,9 +342,18 @@ export default function App() {
         intent: data.intent,
         confidence: data.confidence,
         latencyMicros: data.latency_micros,
-        latencyMs: data.latency_ms,
+        latencyMs: data.latency_ms ?? data.total_latency_ms,
         followUpSuggestions: data.follow_up_suggestions,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        prompt: query,
+        modelUsed: data.model_used,
+        modelName: data.model_name,
+        modelBadge: data.model_badge,
+        gatewayName: data.gateway_name,
+        routingTimeMs: data.routing_time_ms,
+        totalLatencyMs: data.total_latency_ms,
+        triedModels: data.tried_models || (data.model_used ? [data.model_used] : []),
+        nextModel: data.next_model,
       };
 
       setConversations(prev =>
@@ -358,6 +388,79 @@ export default function App() {
       );
     } finally {
       setIsSending(false);
+    }
+  };
+
+  // Regenerate: same prompt, answered by the NEXT best model (never a repeat)
+  const handleRegenerate = async (msg: ChatMessage) => {
+    const query = (msg.prompt || '').trim();
+    if (!query || regeneratingId) return;
+    setRegeneratingId(msg.id);
+    try {
+      const res = await fetch('/api/regenerate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: query,
+          current_model: msg.modelUsed,
+          tried_models: msg.triedModels || (msg.modelUsed ? [msg.modelUsed] : []),
+          provider: settings.mode === 'ownkey' && settings.provider !== 'auto' ? settings.provider : undefined,
+          system_prompt: settings.customPrompt,
+          api_key_override: settings.mode === 'ownkey' ? (settings.apiKey || undefined) : undefined,
+          temperature: settings.temperature,
+          history: messages.slice(-6).map(m => ({
+            role: m.role === 'user' ? 'user' : 'model',
+            content: m.content
+          }))
+        })
+      });
+      if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+      const data = await res.json();
+      setConversations(prev => prev.map(c => c.id === activeConvId ? {
+        ...c,
+        messages: c.messages.map(m => m.id === msg.id ? {
+          ...m,
+          content: data.response,
+          source: data.source,
+          intent: data.intent ?? m.intent,
+          latencyMs: data.latency_ms ?? data.total_latency_ms,
+          latencyMicros: undefined,
+          modelUsed: data.model_used,
+          modelName: data.model_name,
+          modelBadge: data.model_badge,
+          gatewayName: data.gateway_name,
+          routingTimeMs: data.routing_time_ms,
+          totalLatencyMs: data.total_latency_ms,
+          triedModels: data.tried_models || [...(m.triedModels || []), data.model_used].filter(Boolean),
+          nextModel: data.next_model,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        } : m)
+      } : c));
+    } catch (err) {
+      console.warn('Regenerate failed', err);
+    } finally {
+      setRegeneratingId(null);
+    }
+  };
+
+  // Download a single AI reply as branded PDF or Word
+  const handleDownloadAnswer = async (msg: ChatMessage, format: 'pdf' | 'docx') => {
+    setDownloadingId(msg.id);
+    setDownloadMenuId(null);
+    try {
+      const meta = {
+        question: msg.prompt || 'arkAI response',
+        answer: msg.content,
+        modelName: msg.modelName || msg.modelUsed || 'arkAI Orchestrated Model',
+        modelId: msg.modelUsed,
+        gatewayName: msg.gatewayName,
+        generatedAt: new Date(),
+      };
+      if (format === 'pdf') await downloadAnswerPdf(meta); else await downloadAnswerDocx(meta);
+    } catch (err) {
+      console.warn('Download failed', err);
+    } finally {
+      setDownloadingId(null);
     }
   };
 
@@ -689,7 +792,7 @@ export default function App() {
                 <SettingsIcon className="w-4 h-4" />
                 <span>Settings & Engine</span>
               </div>
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-700/60 text-zinc-300 uppercase font-mono">{settings.provider}</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-700/60 text-zinc-300 uppercase font-mono">{settings.mode === 'ownkey' ? settings.provider : 'arkAI Free'}</span>
             </button>
 
             <div className="flex items-center justify-between pt-1">
@@ -706,7 +809,7 @@ export default function App() {
       </aside>
 
       {/* ============================================================== */}
-      {/* MAIN CHAT WORKSPACE (Gemini / GPT Style)                       */}
+      {/* MAIN CHAT WORKSPACE                       */}
       {/* ============================================================== */}
       <main className="flex-1 flex flex-col h-full overflow-hidden relative">
         {/* Top Header */}
@@ -822,7 +925,7 @@ export default function App() {
                     <span>arkAI System Settings</span>
                   </h1>
                   <p className={`text-xs ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>
-                    Universal API key configuration, intelligent zero-model engine, and Vercel cloud settings.
+                    Choose arkAI's free orchestrated models or your own API key, plus persona and creativity controls.
                   </p>
                 </div>
               </div>
@@ -834,169 +937,116 @@ export default function App() {
               </div>
             </div>
 
-            {/* Section 1: Universal AI Provider & Any API Key */}
+            {/* Section 1: AI Source - arkAI models OR your own API key */}
             <div className={`p-5 rounded-2xl border ${theme === 'dark' ? 'bg-[#121215] border-zinc-800/80' : 'bg-white border-zinc-200 shadow-xs'}`}>
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <Cpu className="w-4 h-4 text-indigo-500" />
-                  <h2 className={`text-sm font-semibold ${theme === 'dark' ? 'text-zinc-100' : 'text-zinc-900'}`}>Universal AI Key (Any Provider)</h2>
+                  <h2 className={`text-sm font-semibold ${theme === 'dark' ? 'text-zinc-100' : 'text-zinc-900'}`}>AI Source</h2>
                 </div>
                 <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-500 border border-indigo-500/20 font-semibold">
-                  Zero Model Configuration
+                  {settings.mode === 'ownkey' ? 'Your API key' : 'Free · No key needed'}
                 </span>
               </div>
               <p className={`text-xs mb-4 leading-relaxed ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>
-                Insert an API key from <strong>any</strong> AI platform (ChatGPT, Gemini, Claude, Grok, DeepSeek, Meta AI, Qwen). arkAI automatically accepts your key, engages the optimal flagship model, and guarantees seamless failover to the built-in Gemini engine if quota is depleted. <em>No specific model selection is required.</em>
+                Choose where answers come from. By default arkAI orchestrates free AI models for you - no account, no API key, no cost.
               </p>
 
-              <div className="space-y-3 mb-4">
-                <div className="flex items-center justify-between">
-                  <label className={`block text-xs font-semibold ${theme === 'dark' ? 'text-zinc-200' : 'text-zinc-800'}`}>
-                    Paste Any API Key (ChatGPT, Gemini, Claude, Grok, DeepSeek, Meta, Qwen)
-                  </label>
-                  <span className={`text-[11px] font-mono px-2 py-0.5 rounded border font-medium ${
-                    settings.apiKey
-                      ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30'
-                      : 'bg-zinc-800/40 text-zinc-400 border-zinc-700/40'
-                  }`}>
-                    {settings.apiKey
-                      ? settings.apiKey.startsWith('sk-ant-')
-                        ? 'Detected: Anthropic Claude'
-                        : settings.apiKey.startsWith('xai-')
-                        ? 'Detected: xAI Grok'
-                        : settings.apiKey.startsWith('gsk_')
-                        ? 'Detected: Meta LLaMA (Groq)'
-                        : settings.apiKey.startsWith('AIzaSy') || settings.apiKey.startsWith('AIza')
-                        ? 'Detected: Google Gemini'
-                        : settings.apiKey.startsWith('sk-proj-') || settings.apiKey.startsWith('sk-')
-                        ? 'Detected: OpenAI ChatGPT'
-                        : 'Detected: Custom API Key'
-                      : '🟢 Using Built-In Gemini (Free & Ready — No Key Needed)'}
-                  </span>
-                </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+                <button
+                  onClick={() => setSettings(st => ({ ...st, mode: 'arkai' }))}
+                  className={`text-left p-4 rounded-xl border transition-all ${settings.mode === 'arkai' ? 'border-indigo-500 bg-indigo-500/10' : theme === 'dark' ? 'border-zinc-800 bg-zinc-900/60 hover:border-zinc-700' : 'border-zinc-200 bg-zinc-50 hover:border-zinc-300'}`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <Sparkles className="w-4 h-4 text-indigo-500" />
+                    <span className={`text-xs font-semibold ${theme === 'dark' ? 'text-zinc-100' : 'text-zinc-900'}`}>arkAI Models (Recommended)</span>
+                    {settings.mode === 'arkai' && <CheckCircle2 className="w-4 h-4 text-emerald-500 ml-auto" />}
+                  </div>
+                  <p className={`text-[11px] leading-relaxed ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                    Free orchestrated access to the best available models (GPT-OSS, DeepSeek, GLM & more). arkAI picks the best model for each question in under 2ms and fails over automatically.
+                  </p>
+                </button>
 
-                <div className="relative">
-                  <input
-                    type={showKeyPassword ? 'text' : 'password'}
-                    placeholder="Paste any key (e.g. sk-..., AIzaSy..., xai-..., sk-ant-..., gsk_...)"
-                    value={settings.apiKey}
-                    onChange={e => setSettings(s => ({ ...s, apiKey: e.target.value }))}
-                    className={`w-full rounded-lg pl-3 pr-10 py-2.5 text-xs font-mono outline-none border transition-colors ${
-                      theme === 'dark'
-                        ? 'bg-zinc-900 border-zinc-800 text-zinc-100 focus:border-indigo-500'
-                        : 'bg-zinc-50 border-zinc-300 text-zinc-900 focus:border-indigo-600'
-                    }`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowKeyPassword(p => !p)}
-                    className="absolute right-3 top-2.5 text-zinc-400 hover:text-zinc-200"
-                  >
-                    {showKeyPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className={theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}>
-                    {settings.apiKey
-                      ? '✅ Custom key detected. Queries route directly to your account with auto-fallback to Gemini if quota is reached.'
-                      : '🟢 By default, the existing built-in model of Gemini is active. Anyone can start chatting immediately with zero setup.'}
-                  </span>
-                  {settings.apiKey && (
-                    <button
-                      onClick={() => setSettings(s => ({ ...s, apiKey: '' }))}
-                      className="text-rose-500 hover:underline font-medium"
-                    >
-                      Clear key (Use default)
-                    </button>
-                  )}
-                </div>
+                <button
+                  onClick={() => setSettings(st => ({ ...st, mode: 'ownkey' }))}
+                  className={`text-left p-4 rounded-xl border transition-all ${settings.mode === 'ownkey' ? 'border-indigo-500 bg-indigo-500/10' : theme === 'dark' ? 'border-zinc-800 bg-zinc-900/60 hover:border-zinc-700' : 'border-zinc-200 bg-zinc-50 hover:border-zinc-300'}`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <Key className="w-4 h-4 text-indigo-500" />
+                    <span className={`text-xs font-semibold ${theme === 'dark' ? 'text-zinc-100' : 'text-zinc-900'}`}>Use My Own API Key</span>
+                    {settings.mode === 'ownkey' && <CheckCircle2 className="w-4 h-4 text-emerald-500 ml-auto" />}
+                  </div>
+                  <p className={`text-[11px] leading-relaxed ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                    Only the models available in your own API account will be used - nothing else. Best if you have a paid plan with a specific provider.
+                  </p>
+                </button>
               </div>
 
-              {/* Provider Preference (Optional) & Response Depth */}
-              <div className={`grid grid-cols-1 sm:grid-cols-2 gap-4 pt-3 border-t ${theme === 'dark' ? 'border-zinc-800/60' : 'border-zinc-200'}`}>
-                <div>
-                  <label className={`block text-xs font-semibold mb-1.5 ${theme === 'dark' ? 'text-zinc-300' : 'text-zinc-700'}`}>
-                    Provider Selection (Optional)
-                  </label>
-                  <select
-                    value={settings.provider}
-                    onChange={e => setSettings(s => ({ ...s, provider: e.target.value as any }))}
-                    className={`w-full rounded-lg px-3 py-2 text-xs outline-none border ${
-                      theme === 'dark'
-                        ? 'bg-zinc-900 border-zinc-800 text-zinc-100 focus:border-indigo-500'
-                        : 'bg-zinc-50 border-zinc-300 text-zinc-900 focus:border-indigo-600'
-                    }`}
-                  >
-                    <option value="auto">Auto-Detect Provider (Recommended)</option>
-                    <option value="gemini">Google Gemini (Default - Best Performance)</option>
-                    <option value="openai">OpenAI ChatGPT</option>
-                    <option value="claude">Anthropic Claude</option>
-                    <option value="grok">xAI Grok</option>
-                    <option value="deepseek">DeepSeek</option>
-                    <option value="meta">Meta LLaMA</option>
-                    <option value="qwen">Alibaba Qwen</option>
-                  </select>
+              {settings.mode === 'ownkey' && (
+                <div className="space-y-3 mb-4">
+                  <div className="relative">
+                    <input
+                      type={showKeyPassword ? 'text' : 'password'}
+                      placeholder="Paste your API key (e.g. sk-..., AIza..., xai-..., sk-ant-..., gsk_...)"
+                      value={settings.apiKey}
+                      onChange={e => setSettings(st => ({ ...st, apiKey: e.target.value }))}
+                      className={`w-full rounded-lg pl-3 pr-10 py-2.5 text-xs font-mono outline-none border transition-colors ${theme === 'dark' ? 'bg-zinc-900 border-zinc-800 text-zinc-100 focus:border-indigo-500' : 'bg-zinc-50 border-zinc-300 text-zinc-900 focus:border-indigo-600'}`}
+                    />
+                    <button type="button" onClick={() => setShowKeyPassword(p => !p)} className="absolute right-3 top-2.5 text-zinc-400 hover:text-zinc-200">
+                      {showKeyPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <div>
+                    <label className={`block text-xs font-semibold mb-1.5 ${theme === 'dark' ? 'text-zinc-300' : 'text-zinc-700'}`}>Provider (auto-detected from your key)</label>
+                    <select
+                      value={settings.provider}
+                      onChange={e => setSettings(st => ({ ...st, provider: e.target.value as any }))}
+                      className={`w-full rounded-lg px-3 py-2 text-xs outline-none border ${theme === 'dark' ? 'bg-zinc-900 border-zinc-800 text-zinc-100 focus:border-indigo-500' : 'bg-zinc-50 border-zinc-300 text-zinc-900 focus:border-indigo-600'}`}
+                    >
+                      <option value="auto">Auto-Detect Provider (Recommended)</option>
+                      <option value="openai">OpenAI ChatGPT</option>
+                      <option value="claude">Anthropic Claude</option>
+                      <option value="gemini">Google Gemini</option>
+                      <option value="grok">xAI Grok</option>
+                      <option value="deepseek">DeepSeek</option>
+                      <option value="meta">Meta LLaMA (Groq)</option>
+                      <option value="qwen">Alibaba Qwen</option>
+                      <option value="openrouter">OpenRouter</option>
+                    </select>
+                    <p className={`text-[11px] mt-2 ${theme === 'dark' ? 'text-zinc-500' : 'text-zinc-500'}`}>
+                      Your key is stored only in this browser and sent only to that provider. arkAI's free models are not used in this mode.
+                    </p>
+                  </div>
                 </div>
+              )}
 
-                <div>
-                  <label className={`block text-xs font-semibold mb-1.5 ${theme === 'dark' ? 'text-zinc-300' : 'text-zinc-700'}`}>
-                    Response Depth & Detail
-                  </label>
-                  <select
-                    value={settings.responseDepth}
-                    onChange={e => {
-                      const depth = e.target.value as 'detailed' | 'concise';
-                      setSettings(s => ({
-                        ...s,
-                        responseDepth: depth,
-                        customPrompt: depth === 'detailed' ? SYSTEM_PRESETS.developer : SYSTEM_PRESETS.concise
-                      }));
-                    }}
-                    className={`w-full rounded-lg px-3 py-2 text-xs outline-none border ${
-                      theme === 'dark'
-                        ? 'bg-zinc-900 border-zinc-800 text-zinc-100 focus:border-indigo-500'
-                        : 'bg-zinc-50 border-zinc-300 text-zinc-900 focus:border-indigo-600'
-                    }`}
-                  >
-                    <option value="detailed">Comprehensive & Detailed (Complete files, thorough explanations)</option>
-                    <option value="concise">Concise & Structured (Compact summaries)</option>
-                  </select>
-                </div>
+              <div className={`pt-3 border-t ${theme === 'dark' ? 'border-zinc-800/60' : 'border-zinc-200'}`}>
+                <label className={`block text-xs font-semibold mb-1.5 ${theme === 'dark' ? 'text-zinc-300' : 'text-zinc-700'}`}>Response Depth & Detail</label>
+                <select
+                  value={settings.responseDepth}
+                  onChange={e => {
+                    const depth = e.target.value as 'detailed' | 'concise';
+                    setSettings(st => ({ ...st, responseDepth: depth, customPrompt: depth === 'detailed' ? SYSTEM_PRESETS.developer : SYSTEM_PRESETS.concise }));
+                  }}
+                  className={`w-full sm:w-1/2 rounded-lg px-3 py-2 text-xs outline-none border ${theme === 'dark' ? 'bg-zinc-900 border-zinc-800 text-zinc-100 focus:border-indigo-500' : 'bg-zinc-50 border-zinc-300 text-zinc-900 focus:border-indigo-600'}`}
+                >
+                  <option value="detailed">Comprehensive & Detailed</option>
+                  <option value="concise">Concise & Structured</option>
+                </select>
               </div>
             </div>
 
-            {/* Section 2: Vercel Publishing & Failover Guard FAQ */}
+            {/* Section 2: How orchestration works */}
             <div className={`p-5 rounded-2xl border ${theme === 'dark' ? 'bg-[#121215] border-zinc-800/80' : 'bg-white border-zinc-200 shadow-xs'}`}>
               <div className="flex items-center gap-2 mb-3">
-                <Key className="w-4 h-4 text-emerald-500" />
-                <h2 className={`text-sm font-semibold ${theme === 'dark' ? 'text-zinc-100' : 'text-zinc-900'}`}>Vercel Deployment & Key Safety Guide</h2>
+                <Zap className="w-4 h-4 text-amber-500" />
+                <h2 className={`text-sm font-semibold ${theme === 'dark' ? 'text-zinc-100' : 'text-zinc-900'}`}>How arkAI Picks Your Model</h2>
               </div>
-
-              {/* Vercel Explainer Callout Card */}
-              <div className={`rounded-xl border p-4 space-y-2.5 ${
-                theme === 'dark' ? 'border-blue-900/40 bg-blue-950/20 text-blue-300' : 'border-blue-200 bg-blue-50/70 text-blue-950'
-              }`}>
-                <div className="flex items-center gap-2 text-xs font-semibold">
-                  <HelpCircle className="w-4 h-4" />
-                  <span>Will my API key be consumed when published to Vercel?</span>
-                </div>
-                <div className={`text-xs space-y-2 leading-relaxed ${theme === 'dark' ? 'text-zinc-300' : 'text-zinc-700'}`}>
-                  <p>
-                    <strong>Clear breakdown of API quota consumption:</strong>
-                  </p>
-                  <ul className="list-disc ml-4 space-y-1.5 text-[11px]">
-                    <li>
-                      <strong>If you add <code>GEMINI_API_KEY</code> in Vercel Environment Variables:</strong> Users visiting your live website can chat freely, and reasoning queries will draw from your server environment quota.
-                    </li>
-                    <li>
-                      <strong>If you leave Vercel environment variables empty:</strong> Your personal API key will <em>never</em> be consumed. Visitors can either use the instant sub-millisecond local pattern engine (`~35μs`) & built-in synthesizer for free, or paste their own API key in Settings.
-                    </li>
-                    <li>
-                      <strong>Failover Protection:</strong> If any provider API key hits a rate limit or runs out of credits, arkAI automatically safeguards your conversation by falling back to the built-in Gemini engine.
-                    </li>
-                  </ul>
-                </div>
+              <div className={`space-y-2.5 text-xs leading-relaxed ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                <p><strong className={theme === 'dark' ? 'text-zinc-200' : 'text-zinc-800'}>1. Instant routing (&lt;2ms).</strong> Every question is classified locally - code, maths & logic, creative, or general - and matched to the model that is best at it.</p>
+                <p><strong className={theme === 'dark' ? 'text-zinc-200' : 'text-zinc-800'}>2. Automatic failover.</strong> If a model is busy or rate-limited, arkAI instantly cascades to the next best model. Your conversation never drops.</p>
+                <p><strong className={theme === 'dark' ? 'text-zinc-200' : 'text-zinc-800'}>3. Regenerate = a different model.</strong> Not happy with an answer? Regenerate re-asks the same question on the next best model that hasn't answered it yet.</p>
+                <p><strong className={theme === 'dark' ? 'text-zinc-200' : 'text-zinc-800'}>4. Always labelled.</strong> Every reply shows exactly which model produced it, at the end of the answer.</p>
               </div>
             </div>
 
@@ -1121,7 +1171,7 @@ export default function App() {
                 What can I help you with today?
               </h1>
               <p className={`text-sm max-w-md mb-8 ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>
-                Instant sub-millisecond pattern replies backed by Google Gemini reasoning.
+                Instant pattern replies, plus free orchestrated AI models picked per question in under 2ms.
               </p>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full text-left">
@@ -1155,7 +1205,7 @@ export default function App() {
                     <span className={`text-xs font-semibold ${theme === 'dark' ? 'text-zinc-200 group-hover:text-white' : 'text-zinc-900 group-hover:text-black'}`}>Response Speed</span>
                   </div>
                   <p className={`text-xs ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>
-                    Sub-millisecond local matcher backed by Gemini Flash.
+                    Sub-millisecond local matcher plus orchestrated free AI models.
                   </p>
                 </button>
 
@@ -1241,7 +1291,17 @@ export default function App() {
                           </div>
                         )}
 
-                        <div className="flex items-center gap-3 text-xs pt-1">
+                        {(msg.modelName || msg.modelUsed) && (
+                          <div className={`flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-mono border-t pt-2 ${theme === 'dark' ? 'border-zinc-800/70 text-zinc-400' : 'border-zinc-200 text-zinc-600'}`}>
+                            <Bot className="w-3.5 h-3.5 text-indigo-500" />
+                            <span>Model used: <strong className={theme === 'dark' ? 'text-zinc-200' : 'text-zinc-900'}>{msg.modelName || msg.modelUsed}</strong></span>
+                            {msg.gatewayName && <span>via {msg.gatewayName}</span>}
+                            {msg.modelBadge && <span className="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-500 border border-indigo-500/20">{msg.modelBadge}</span>}
+                            {typeof msg.totalLatencyMs === 'number' && <span>{(msg.totalLatencyMs / 1000).toFixed(1)}s</span>}
+                          </div>
+                        )}
+
+                        <div className="flex items-center gap-3 text-xs pt-1 flex-wrap">
                           <button
                             onClick={() => copyText(msg.content, msg.id)}
                             className={`p-1 rounded transition-colors ${
@@ -1279,6 +1339,45 @@ export default function App() {
                           >
                             <ThumbsDown className="w-3.5 h-3.5" />
                           </button>
+
+                          <button
+                            onClick={() => handleRegenerate(msg)}
+                            disabled={regeneratingId === msg.id || !msg.prompt}
+                            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border font-medium transition-all disabled:opacity-50 ${
+                              theme === 'dark' ? 'border-zinc-700 text-zinc-200 hover:bg-zinc-800' : 'border-zinc-300 text-zinc-800 hover:bg-zinc-100'
+                            }`}
+                            title="Regenerate with a different AI model"
+                          >
+                            <RefreshCw className={`w-3.5 h-3.5 ${regeneratingId === msg.id ? 'animate-spin' : ''}`} />
+                            <span>{regeneratingId === msg.id ? 'Regenerating…' : 'Regenerate'}</span>
+                          </button>
+
+                          <div className="relative">
+                            <button
+                              onClick={() => setDownloadMenuId(downloadMenuId === msg.id ? null : msg.id)}
+                              disabled={downloadingId === msg.id}
+                              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border font-medium transition-all disabled:opacity-50 ${
+                                theme === 'dark' ? 'border-zinc-700 text-zinc-200 hover:bg-zinc-800' : 'border-zinc-300 text-zinc-800 hover:bg-zinc-100'
+                              }`}
+                              title="Download this answer"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                              <span>{downloadingId === msg.id ? 'Preparing…' : 'Download'}</span>
+                              <ChevronDown className="w-3 h-3" />
+                            </button>
+                            {downloadMenuId === msg.id && (
+                              <div className={`absolute left-0 bottom-9 z-20 w-52 rounded-xl border shadow-xl p-1.5 ${theme === 'dark' ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-zinc-200'}`}>
+                                <button onClick={() => handleDownloadAnswer(msg, 'pdf')} className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left ${theme === 'dark' ? 'hover:bg-zinc-800 text-zinc-200' : 'hover:bg-zinc-100 text-zinc-800'}`}>
+                                  <FileText className="w-4 h-4 text-rose-500" />
+                                  <span><span className="block font-medium">Download as PDF</span><span className={`block text-[10px] ${theme === 'dark' ? 'text-zinc-500' : 'text-zinc-500'}`}>Branded, logo on every page</span></span>
+                                </button>
+                                <button onClick={() => handleDownloadAnswer(msg, 'docx')} className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left ${theme === 'dark' ? 'hover:bg-zinc-800 text-zinc-200' : 'hover:bg-zinc-100 text-zinc-800'}`}>
+                                  <FileType className="w-4 h-4 text-blue-500" />
+                                  <span><span className="block font-medium">Download as Word</span><span className={`block text-[10px] ${theme === 'dark' ? 'text-zinc-500' : 'text-zinc-500'}`}>Editable .docx with header logo</span></span>
+                                </button>
+                              </div>
+                            )}
+                          </div>
 
                           {msg.latencyMicros ? (
                             <span className={`font-mono text-[11px] flex items-center gap-1 border px-1.5 py-0.5 rounded ${
@@ -1371,7 +1470,7 @@ export default function App() {
           </form>
 
               <p className="text-[11px] text-zinc-400 text-center mt-2">
-                arkAI delivers sub-millisecond local pattern replies & Gemini reasoning. Verify important details.
+                arkAI routes every question to the best free model and shows which model answered. Verify important details.
               </p>
             </div>
           </>
@@ -1404,6 +1503,18 @@ export default function App() {
 
             <div className="space-y-3.5 text-xs">
               <div className="space-y-1">
+                <label className={`font-medium ${theme === 'dark' ? 'text-zinc-300' : 'text-zinc-700'}`}>AI Source</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => setSettings(st => ({ ...st, mode: 'arkai' }))} className={`px-3 py-2 rounded-lg border font-medium ${settings.mode === 'arkai' ? 'border-indigo-500 bg-indigo-500/10' : theme === 'dark' ? 'border-zinc-800' : 'border-zinc-300'}`}>arkAI Models (Free)</button>
+                  <button onClick={() => setSettings(st => ({ ...st, mode: 'ownkey' }))} className={`px-3 py-2 rounded-lg border font-medium ${settings.mode === 'ownkey' ? 'border-indigo-500 bg-indigo-500/10' : theme === 'dark' ? 'border-zinc-800' : 'border-zinc-300'}`}>My Own API Key</button>
+                </div>
+                <span className={`text-[10px] block ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>
+                  {settings.mode === 'arkai' ? 'Free orchestrated models - no key needed. arkAI picks the best model per question.' : 'Only models from your own API account will be used.'}
+                </span>
+              </div>
+
+              {settings.mode === 'ownkey' && (<>
+              <div className="space-y-1">
                 <label className={`font-medium ${theme === 'dark' ? 'text-zinc-300' : 'text-zinc-700'}`}>Provider Selection</label>
                 <select
                   value={settings.provider}
@@ -1413,23 +1524,24 @@ export default function App() {
                   }`}
                 >
                   <option value="auto">Auto-Detect Provider (Recommended)</option>
-                  <option value="gemini">Google Gemini (Default)</option>
                   <option value="openai">OpenAI ChatGPT</option>
                   <option value="claude">Anthropic Claude</option>
+                  <option value="gemini">Google Gemini</option>
                   <option value="grok">xAI Grok</option>
                   <option value="deepseek">DeepSeek</option>
                   <option value="meta">Meta LLaMA</option>
                   <option value="qwen">Alibaba Qwen</option>
+                  <option value="openrouter">OpenRouter</option>
                 </select>
               </div>
 
               <div className="space-y-1">
                 <div className="flex items-center justify-between">
                   <label className={`font-medium ${theme === 'dark' ? 'text-zinc-300' : 'text-zinc-700'}`}>
-                    Paste Any API Key (Universal)
+                    Your API Key
                   </label>
                   <span className="text-[10px] font-mono text-emerald-500 font-semibold">
-                    {settings.apiKey ? 'Key Configured' : '🟢 Using Built-In Gemini'}
+                    {settings.apiKey ? 'Key Configured' : 'No key yet'}
                   </span>
                 </div>
                 <input
@@ -1442,11 +1554,10 @@ export default function App() {
                   }`}
                 />
                 <span className={`text-[10px] block ${theme === 'dark' ? 'text-zinc-400' : 'text-zinc-600'}`}>
-                  {settings.apiKey
-                    ? 'Custom key active with instant auto-fallback to Gemini if quota is depleted.'
-                    : 'Leave blank to use the free, fast built-in Gemini engine out of the box.'}
+                  Stored only in this browser. Used only with the provider above - arkAI's free models are off in this mode.
                 </span>
               </div>
+              </>)}
 
               <div className="space-y-1">
                 <label className={`font-medium ${theme === 'dark' ? 'text-zinc-300' : 'text-zinc-700'}`}>System Persona Preset</label>
