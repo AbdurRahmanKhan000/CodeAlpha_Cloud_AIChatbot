@@ -202,56 +202,6 @@ export function matchIntent(query: string, threshold = 75.0) {
   };
 }
 
-// Universal Provider & Key Resolver
-export function detectProviderFromKey(key?: string, explicitProvider?: string): {
-  provider: 'gemini' | 'openai' | 'claude' | 'grok' | 'deepseek' | 'meta' | 'qwen' | 'openrouter';
-  model: string;
-  endpoint?: string;
-  name: string;
-} {
-  const trimmed = (key || '').trim();
-  const explicit = (explicitProvider || '').toLowerCase().trim();
-
-  // If user selected explicit provider other than 'auto' or 'gemini'
-  if (explicit === 'claude') {
-    return { provider: 'claude', model: 'claude-3-5-sonnet-20241022', endpoint: 'https://api.anthropic.com/v1/messages', name: 'Anthropic Claude' };
-  }
-  if (explicit === 'deepseek') {
-    return { provider: 'deepseek', model: 'deepseek-chat', endpoint: 'https://api.deepseek.com/chat/completions', name: 'DeepSeek' };
-  }
-  if (explicit === 'meta') {
-    return { provider: 'meta', model: 'llama-3.3-70b-versatile', endpoint: 'https://api.groq.com/openai/v1/chat/completions', name: 'Meta LLaMA' };
-  }
-  if (explicit === 'qwen') {
-    return { provider: 'qwen', model: 'qwen-plus', endpoint: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions', name: 'Alibaba Qwen' };
-  }
-  if (explicit === 'grok') {
-    return { provider: 'grok', model: 'grok-2', endpoint: 'https://api.x.ai/v1/chat/completions', name: 'xAI Grok' };
-  }
-  if (explicit === 'openai') {
-    return { provider: 'openai', model: 'gpt-4o-mini', endpoint: 'https://api.openai.com/v1/chat/completions', name: 'OpenAI ChatGPT' };
-  }
-
-  // Auto-detection based on key signature
-  if (trimmed.startsWith('sk-ant-')) {
-    return { provider: 'claude', model: 'claude-3-5-sonnet-20241022', endpoint: 'https://api.anthropic.com/v1/messages', name: 'Anthropic Claude' };
-  }
-  if (trimmed.startsWith('xai-')) {
-    return { provider: 'grok', model: 'grok-2', endpoint: 'https://api.x.ai/v1/chat/completions', name: 'xAI Grok' };
-  }
-  if (trimmed.startsWith('gsk_')) {
-    return { provider: 'meta', model: 'llama-3.3-70b-versatile', endpoint: 'https://api.groq.com/openai/v1/chat/completions', name: 'Meta LLaMA (Groq)' };
-  }
-  if (trimmed.startsWith('sk-or-')) {
-    return { provider: 'openrouter', model: 'deepseek/deepseek-chat', endpoint: 'https://openrouter.ai/api/v1/chat/completions', name: 'OpenRouter' };
-  }
-  if (trimmed.startsWith('AIzaSy')) {
-    return { provider: 'gemini', model: 'gemini-flash-latest', name: 'Google Gemini' };
-  }
-  if (trimmed.startsWith('sk-')) {
-    return { provider: 'openai', model: 'gpt-4o-mini', endpoint: 'https://api.openai.com/v1/chat/completions', name: 'OpenAI ChatGPT' };
-  }
-
-  // Default: Gemini built-in
-  return { provider: 'gemini', model: 'gemini-flash-latest', name: 'Google Gemini (Default)' };
-}
+// Universal Provider & Key Resolver now lives in ./orchestrator.ts
+// (single source of truth shared by server.ts and the Python backend).
+export { detectProviderFromKey, OWN_KEY_PROVIDERS } from './orchestrator.ts';
