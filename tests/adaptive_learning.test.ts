@@ -5,7 +5,7 @@
  */
 
 import { isBenched, recordFailure, recordSuccess, recordFeedback, winrate, applyLearning } from '../src/adaptive.ts';
-import { rankedModelsForIntent, MODEL_CATALOG, parseRetryAfter } from '../src/orchestrator.ts';
+import { rankedModelsForIntent, MODEL_CATALOG, parseRetryAfter, FIRST_TOKEN_MS, PATIENCE_MAX_S } from '../src/orchestrator.ts';
 
 export async function runAdaptiveLearningTests(): Promise<{ name: string; passed: boolean; details?: string }[]> {
   const results = [];
@@ -54,6 +54,12 @@ export async function runAdaptiveLearningTests(): Promise<{ name: string; passed
       && parseRetryAfter('{"retry_after": 7}') === 7
       && parseRetryAfter('HTTP 500 boom') === 0,
     details: 'One bounded retry (max 20s) per request, with a status event to the UI',
+  });
+
+  results.push({
+    name: 'Latency discipline constants: 7s first-token deadline, patience capped at 12s',
+    passed: FIRST_TOKEN_MS === 7000 && PATIENCE_MAX_S === 12,
+    details: 'A stalling model is abandoned and the cascade moves on instead of waiting out a 30-45s timeout',
   });
 
   return results;

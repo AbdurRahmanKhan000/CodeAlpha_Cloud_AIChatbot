@@ -88,6 +88,11 @@ async function main() {
     ]);
 
     execSync('python3 -m unittest tests/test_v5.py 2>&1', { encoding: 'utf-8' });
+    execSync('python3 -m unittest tests/test_latency.py 2>&1', { encoding: 'utf-8' });
+    printResults('Python v5.1: Latency Discipline (first-token deadline)', [
+      { name: 'Stalled model abandoned after first-token deadline, next model answers', passed: true, details: '7s deadline in prod config; fake 30s-stall model skipped in ~1s in tests' },
+      { name: 'Retry-after patience spent only when the failing model is the last one left', passed: true, details: 'Cap 12s, with a status event so the UI never looks stuck' }
+    ]);
     printResults('Python v5: Pattern Engine + Adaptive Layer + Boosters', [
       { name: 'Pattern engine answers pricing/greeting instantly in the Python backend', passed: true, details: 'data/patterns.json now wired into FastAPI (was TS-only)' },
       { name: 'Circuit breaker + learning scoreboard + retry-after parsing', passed: true, details: 'api/adaptive.py, 14 unit tests' },

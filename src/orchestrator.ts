@@ -161,6 +161,15 @@ export function detectProviderFromKey(key?: string, explicitProvider?: string): 
 }
 
 // ------------------------------------------------- helpers: patience + breaker
+// Latency discipline (v5.1): a model that cannot produce its FIRST token in
+// 7s is abandoned and the cascade moves on - serial full-timeout waits were
+// the main cause of 30-60s answers. Once tokens flow, a 30s idle gap is
+// allowed between chunks. The retry-after "patience" wait is spent ONLY
+// when the failing model is the last one left (cap 12s).
+export const FIRST_TOKEN_MS = 7000;
+export const IDLE_MS = 30000;
+export const PATIENCE_MAX_S = 12;
+
 export function parseRetryAfter(reason: string): number {
   if (!reason) return 0;
   const m = /[Rr]etry after (\d+(?:\.\d+)?)/.exec(reason) || /"retry_after":\s*(\d+(?:\.\d+)?)/.exec(reason);
@@ -254,7 +263,8 @@ export async function executeOrchestratedChat(opts: {
   const ranked = unbenched(applyLearning(intent, rankedModelsForIntent(intent, exclude)));
   const history: any[] = [];
   let patienceUsed = false;
-  for (const logical of ranked) {
+  for (let idx = 0; idx < ranked.length; idx++) {
+    const logical = ranked[idx];
     const gw = gatewaySpec(logical.gateway);
     const start = process.hrtime.bigint();
     let ok = false, content = '', reason = '';
@@ -269,9 +279,9 @@ export async function executeOrchestratedChat(opts: {
       }
       recordFailure(logical.id);
       const ra = parseRetryAfter(reason);
-      if (!patienceUsed && ra > 0 && attempt === 0) {
+      if (!patienceUsed && ra > 0 && attempt === 0 && idx === ranked.length - 1) {
         patienceUsed = true;
-        await sleep(Math.min(ra + 1, 20) * 1000);
+        await sleep(Math.min(ra + 1, PATIENCE_MAX_S) * 1000);
         continue;
       }
       break;
@@ -407,16 +417,37 @@ export async function* executeOrchestratedChatStream(opts: ChatOptions): AsyncGe
   const ranked = unbenched(applyLearning(intent, rankedModelsForIntent(intent, exclude)));
   const failover: Array<Record<string, unknown>> = [];
   let patienceUsed = false;
-  for (const logical of ranked) {
+  for (let idx = 0; idx < ranked.length; idx++) {
+    const logical = ranked[idx];
     const state = { collected: '' };
     const attemptOnce = async function* (): AsyncGenerator<StreamEvent> {
       const gen = streamGatewayDeltas(logical, messages, temperature);
-      const first = await gen.next();
+      const timedNext = (ms: number) => Promise.race([
+        gen.next(),
+        sleep(ms).then(() => { throw new Error('__deadline__'); }),
+      ]);
+      let first: IteratorResult<string>;
+      try {
+        first = await timedNext(FIRST_TOKEN_MS);
+      } catch {
+        try { await gen.return(undefined as any); } catch { /* noop */ }
+        throw new Error(`No first token within ${FIRST_TOKEN_MS / 1000}s`);
+      }
       if (first.done || !first.value) throw new Error('Empty stream');
       yield { type: 'meta', model_used: logical.id, model_name: logical.name, model_badge: logical.badge, gateway: logical.gateway, gateway_name: gatewaySpec(logical.gateway).name, provider_family: logical.providerFamily, mode: 'arkai_free' };
       state.collected += first.value;
       yield { type: 'delta', content: first.value };
-      for await (const d of gen) { state.collected += d; yield { type: 'delta', content: d }; }
+      for (;;) {
+        let step: IteratorResult<string>;
+        try {
+          step = await timedNext(IDLE_MS);
+        } catch {
+          break; // stalled mid-answer: keep what we have
+        }
+        if (step.done) break;
+        state.collected += step.value;
+        yield { type: 'delta', content: step.value };
+      }
     };
     try {
       yield* attemptOnce();
@@ -427,9 +458,9 @@ export async function* executeOrchestratedChatStream(opts: ChatOptions): AsyncGe
       } else {
         recordFailure(logical.id);
         const ra = parseRetryAfter(String(e));
-        if (!patienceUsed && ra > 0) {
+        if (!patienceUsed && ra > 0 && idx === ranked.length - 1) {
           patienceUsed = true;
-          const waitS = Math.min(ra + 1, 20);
+          const waitS = Math.min(ra + 1, PATIENCE_MAX_S);
           yield { type: 'status', message: `Free models are busy - retrying in ${Math.floor(waitS)}s...` };
           await sleep(waitS * 1000);
           try { yield* attemptOnce(); if (state.collected) recordSuccess(logical.id); } catch { /* keep whatever arrived */ }
