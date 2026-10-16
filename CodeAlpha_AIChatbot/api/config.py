@@ -1,168 +1,235 @@
 """
-arkAI - Secure Environment Loader & Free Model Configuration
-ARK Ecosystem - Serverless AI Orchestration Platform
+arkAI - Free Orchestration Configuration (NO API key required by default)
+
+arkAI is an *orchestrated* chatbot: by default it does NOT depend on any
+single vendor API (not Gemini, not OpenRouter, not anyone). Every query is
+classified locally in <2ms and dispatched to the best-ranked model that is
+reachable through FREE, anonymous AI gateways:
+
+  1. Pollinations Classic  - https://text.pollinations.ai/openai
+     Anonymous, no key. Verified live. Serves GPT-OSS 20B (reasoning).
+  2. LLM7 Anonymous         - https://api.llm7.io/v1/chat/completions
+     Anonymous free tier, no key. Serves DeepSeek Flash, GLM Flash,
+     GPT-OSS and more (subject to the gateway's anonymous daily quota;
+     failures simply cascade to the next model).
+
+A "logical model" in the catalog below is one (gateway, upstream model)
+pair. Regenerate excludes every logical model already tried for a prompt
+and picks the next best-ranked one, so the user always gets a *different*
+model's answer.
+
+Optional "Own Key" mode: if (and only if) the user supplies their own API
+key in Settings, arkAI uses ONLY that provider's models - see
+OWN_KEY_PROVIDERS. There is no arkAI server key and no fallback into the
+free pool in that mode.
 """
 
-import sys
 import os
 from typing import Dict, Any, List
 
-# Ensure both project root and api/ directory are accessible in sys.path
-_current_dir = os.path.dirname(os.path.abspath(__file__))
-_parent_dir = os.path.dirname(_current_dir)
-for _p in (_current_dir, _parent_dir):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
-# Safely attempt dotenv loading if python-dotenv is present
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
-
-# OpenRouter API Base Endpoint
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-# Primary Free Model Pool in prioritized cascade order (all ending in :free)
-FREE_MODEL_POOL: List[str] = [
-    "google/gemini-2.0-flash-lite-001:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "deepseek/deepseek-r1:free",
-    "qwen/qwen-2.5-coder-32b-instruct:free",
-    "mistralai/mistral-7b-instruct:free",
-]
-
-# Detailed metadata and purpose for each free model
-MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {
-    "google/gemini-2.0-flash-lite-001:free": {
-        "id": "google/gemini-2.0-flash-lite-001:free",
-        "name": "Gemini 2.0 Flash Lite",
-        "category": "General QA & High Speed",
-        "badge": "⚡ Ultra-Fast",
-        "provider": "Google",
-        "description": "Lightning-fast default reasoning for conversational QA and high-throughput queries.",
-        "icon": "zap",
+# ---------------------------------------------------------------- gateways
+FREE_GATEWAYS: Dict[str, Dict[str, Any]] = {
+    "pollinations": {
+        "name": "Pollinations",
+        "endpoint": "https://text.pollinations.ai/openai",
+        "requires_key": False,
+        "timeout_seconds": 45.0,
     },
-    "meta-llama/llama-3.3-70b-instruct:free": {
-        "id": "meta-llama/llama-3.3-70b-instruct:free",
-        "name": "Llama 3.3 70B Instruct",
-        "category": "Creative Writing & General Reasoning",
-        "badge": "✍️ Creative / Reasoning",
-        "provider": "Meta",
-        "description": "Advanced creative writing, long-form essays, synthesis, and nuanced communications.",
-        "icon": "feather",
-    },
-    "deepseek/deepseek-r1:free": {
-        "id": "deepseek/deepseek-r1:free",
-        "name": "DeepSeek R1",
-        "category": "Complex Logic, Math, & Deep Reasoning",
-        "badge": "🧠 Deep Reasoning",
-        "provider": "DeepSeek",
-        "description": "Autonomous step-by-step mathematical reasoning, algorithmic logic, and proofs.",
-        "icon": "cpu",
-    },
-    "qwen/qwen-2.5-coder-32b-instruct:free": {
-        "id": "qwen/qwen-2.5-coder-32b-instruct:free",
-        "name": "Qwen 2.5 Coder 32B",
-        "category": "Code Generation & Debugging",
-        "badge": "💻 Software Engineering",
-        "provider": "Alibaba",
-        "description": "State-of-the-art code architecture, debugging, multi-language syntax, and refactoring.",
-        "icon": "code",
-    },
-    "mistralai/mistral-7b-instruct:free": {
-        "id": "mistralai/mistral-7b-instruct:free",
-        "name": "Mistral 7B Instruct",
-        "category": "Lightweight Fallback",
-        "badge": "🛡️ Failover Shield",
-        "provider": "Mistral",
-        "description": "Ultra-reliable compact fallback model ensuring 100% uptime under provider load spikes.",
-        "icon": "shield",
+    "llm7": {
+        "name": "LLM7",
+        "endpoint": "https://api.llm7.io/v1/chat/completions",
+        "requires_key": False,
+        "timeout_seconds": 30.0,
     },
 }
 
-def get_server_openrouter_key() -> str:
-    """
-    Exclusively read OpenRouter API key from environment variable.
-    Returns empty string if not configured (never crashes).
-    """
-    key = os.getenv("OPENROUTER_API_KEY", "").strip()
-    if not key or key in ("your_openrouter_api_key_here", "MY_OPENROUTER_API_KEY"):
-        return ""
-    return key
+# ------------------------------------------------------------- model catalog
+# strengths: the intents this model is best at, in order of excellence.
+MODEL_CATALOG: List[Dict[str, Any]] = [
+    {
+        "id": "pollinations/gpt-oss-20b",
+        "gateway": "pollinations",
+        "upstream_model": "openai-fast",
+        "name": "GPT-OSS 20B",
+        "provider_family": "OpenAI (open weights)",
+        "badge": "Reasoning",
+        "strengths": ["math_logic", "general", "code", "creative"],
+        "description": "Open-weight reasoning model served anonymously by Pollinations. Fast, dependable all-rounder and arkAI's primary free model.",
+    },
+    {
+        "id": "llm7/deepseek-v4-flash",
+        "gateway": "llm7",
+        "upstream_model": "DeepSeek-V4-Flash-0731",
+        "name": "DeepSeek V4 Flash",
+        "provider_family": "DeepSeek",
+        "badge": "Deep Reasoning & Code",
+        "strengths": ["code", "math_logic", "general"],
+        "description": "DeepSeek's flash reasoning model via the LLM7 anonymous gateway. First choice for code and hard logic.",
+    },
+    {
+        "id": "llm7/glm-5.3-flash",
+        "gateway": "llm7",
+        "upstream_model": "GLM-5.3-Flash",
+        "name": "GLM 5.3 Flash",
+        "provider_family": "Z.ai (GLM)",
+        "badge": "Ultra-Fast",
+        "strengths": ["general", "creative", "code"],
+        "description": "Very fast GLM flash model via LLM7. Great for general chat and creative writing.",
+    },
+    {
+        "id": "llm7/gpt-oss-20b",
+        "gateway": "llm7",
+        "upstream_model": "gpt-oss:20b",
+        "name": "GPT-OSS 20B (LLM7)",
+        "provider_family": "OpenAI (open weights)",
+        "badge": "Reasoning",
+        "strengths": ["general", "math_logic", "creative"],
+        "description": "The same open-weight GPT-OSS family through a second gateway - a genuinely different route for Regenerate.",
+    },
+]
 
-def resolve_effective_key(client_override_key: str = "") -> str:
-    """
-    Resolves client-provided override or falls back to server environment variable.
-    """
-    cleaned_client = (client_override_key or "").strip()
-    if cleaned_client and cleaned_client != "your_openrouter_api_key_here":
-        return cleaned_client
-    return get_server_openrouter_key()
+MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {m["id"]: m for m in MODEL_CATALOG}
 
-def is_demo_mode(api_key: str = "") -> bool:
-    """
-    Determines if arkAI is running in demo mode (no valid key provided).
-    """
-    effective_key = resolve_effective_key(api_key)
-    return len(effective_key) == 0
+# Ranked logical-model ids per intent (best first). Regenerate walks this
+# list, skipping everything already tried for the prompt.
+INTENT_RANKINGS: Dict[str, List[str]] = {
+    "code": [
+        "llm7/deepseek-v4-flash",
+        "pollinations/gpt-oss-20b",
+        "llm7/glm-5.3-flash",
+        "llm7/gpt-oss-20b",
+    ],
+    "math_logic": [
+        "llm7/deepseek-v4-flash",
+        "pollinations/gpt-oss-20b",
+        "llm7/gpt-oss-20b",
+        "llm7/glm-5.3-flash",
+    ],
+    "creative": [
+        "llm7/glm-5.3-flash",
+        "pollinations/gpt-oss-20b",
+        "llm7/gpt-oss-20b",
+        "llm7/deepseek-v4-flash",
+    ],
+    "general": [
+        "pollinations/gpt-oss-20b",
+        "llm7/glm-5.3-flash",
+        "llm7/deepseek-v4-flash",
+        "llm7/gpt-oss-20b",
+    ],
+}
 
-def get_demo_mode_response(prompt_type: str, selected_model: str, user_query: str) -> Dict[str, Any]:
-    """
-    Returns a structured, graceful demonstration payload when OPENROUTER_API_KEY
-    is not configured, informing the user how to configure it without throwing an error.
-    Explicitly provides status: 'demo_mode'.
-    """
-    spec = MODEL_REGISTRY.get(selected_model, {
-        "name": selected_model,
-        "category": "AI Orchestration",
-        "badge": "Free Tier",
-    })
+# ------------------------------------------------------------ own-key mode
+# Used ONLY when the user pastes their own key in Settings. arkAI then
+# calls that provider alone, with that provider's own best models.
+OWN_KEY_PROVIDERS: Dict[str, Dict[str, Any]] = {
+    "openai": {
+        "name": "OpenAI",
+        "endpoint": "https://api.openai.com/v1/chat/completions",
+        "models": ["gpt-4o-mini", "gpt-4o"],
+        "key_prefixes": ["sk-"],
+    },
+    "openrouter": {
+        "name": "OpenRouter",
+        "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+        "models": ["deepseek/deepseek-chat", "meta-llama/llama-3.3-70b-instruct"],
+        "key_prefixes": ["sk-or-"],
+    },
+    "deepseek": {
+        "name": "DeepSeek",
+        "endpoint": "https://api.deepseek.com/chat/completions",
+        "models": ["deepseek-chat", "deepseek-reasoner"],
+        "key_prefixes": [],
+    },
+    "grok": {
+        "name": "xAI Grok",
+        "endpoint": "https://api.x.ai/v1/chat/completions",
+        "models": ["grok-2", "grok-2-mini"],
+        "key_prefixes": ["xai-"],
+    },
+    "meta": {
+        "name": "Meta LLaMA (Groq)",
+        "endpoint": "https://api.groq.com/openai/v1/chat/completions",
+        "models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+        "key_prefixes": ["gsk_"],
+    },
+    "qwen": {
+        "name": "Alibaba Qwen",
+        "endpoint": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+        "models": ["qwen-plus", "qwen-turbo"],
+        "key_prefixes": [],
+    },
+    "gemini": {
+        "name": "Google Gemini",
+        "endpoint": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        "models": ["gemini-2.0-flash", "gemini-1.5-flash"],
+        "key_prefixes": ["AIza"],
+    },
+    "claude": {
+        "name": "Anthropic Claude",
+        "endpoint": "https://api.anthropic.com/v1/messages",
+        "models": ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"],
+        "key_prefixes": ["sk-ant-"],
+    },
+}
 
-    demo_text = (
-        f"### 🚀 arkAI Heuristic Router Operational\n\n"
-        f"**Prompt Classification:** `{prompt_type.upper()}`  \n"
-        f"**Assigned Free Model:** `{spec['name']}` (`{selected_model}`)  \n"
-        f"**Heuristic Latency:** `< 1.2 ms` (Target SLA: < 2 ms)  \n\n"
-        f"---\n\n"
-        f"#### ⚙️ Configuration Notice: Demo Mode\n"
-        f"The backend successfully routed your request through the **AI Fiesta Heuristic Engine**. "
-        f"To trigger live generation from OpenRouter's free model pool, configure your API key:\n\n"
-        f"1. **Option A (Persistent / Serverless):** In your Vercel Dashboard or local `.env`, set:\n"
-        f"   ```bash\n"
-        f"   OPENROUTER_API_KEY=sk-or-v1-...\n"
-        f"   ```\n"
-        f"2. **Option B (Instant in UI):** Click the **⚙️ Settings** icon in the top header and enter your personal OpenRouter key.\n\n"
-        f"> 💡 *Get a 100% free OpenRouter key with zero card required at [openrouter.ai/keys](https://openrouter.ai/keys).*"
-    )
 
-    return {
-        "status": "demo_mode",
-        "provider_status": "demo_mode",
-        "response": demo_text,
-        "model_used": selected_model,
-        "model_name": spec["name"],
-        "model_badge": spec.get("badge", "Free"),
-        "prompt_type": prompt_type,
-        "routing_time_ms": 1.15,
-        "total_latency_ms": 1.5,
-        "next_fallback_model": get_next_fallback_model(selected_model),
-        "demo_mode": True,
-        "meta": {
-            "query_preview": user_query[:60] + ("..." if len(user_query) > 60 else ""),
-            "notice": "OPENROUTER_API_KEY environment variable required for live inference."
-        }
-    }
+def detect_provider_from_key(key: str = "", explicit_provider: str = "") -> str:
+    """Detect which provider an own-key belongs to (explicit wins)."""
+    explicit = (explicit_provider or "").lower().strip()
+    if explicit and explicit in OWN_KEY_PROVIDERS:
+        return explicit
+    trimmed = (key or "").strip()
+    # order matters: sk-or- and sk-ant- also start with sk-
+    for prefix, provider in (("sk-or-", "openrouter"), ("sk-ant-", "claude"),
+                             ("xai-", "grok"), ("gsk_", "meta"), ("AIza", "gemini")):
+        if trimmed.startswith(prefix):
+            return provider
+    if trimmed.startswith("sk-"):
+        return "openai"
+    return "openai"
+
+
+def ranked_models_for_intent(intent: str, exclude: List[str] = None) -> List[Dict[str, Any]]:
+    """Best-first logical models for an intent, skipping excluded ids."""
+    exclude_set = set(exclude or [])
+    ranking = INTENT_RANKINGS.get(intent) or INTENT_RANKINGS["general"]
+    ordered = [MODEL_REGISTRY[mid] for mid in ranking if mid in MODEL_REGISTRY]
+    # append any catalog model not in the ranking, as a last resort
+    for m in MODEL_CATALOG:
+        if m["id"] not in ranking:
+            ordered.append(m)
+    return [m for m in ordered if m["id"] not in exclude_set]
+
+
+def next_model_for_regenerate(intent: str, tried: List[str]) -> Dict[str, Any] | None:
+    """Next best model that has NOT already answered this prompt."""
+    remaining = ranked_models_for_intent(intent, exclude=tried)
+    return remaining[0] if remaining else None
+
+
+# ------------------------------------------------- legacy compat (old tests)
+# The old OpenRouter-only pool is gone. These names are kept as thin aliases
+# so nothing external breaks, but arkAI no longer depends on them.
+FREE_MODEL_POOL: List[str] = [m["id"] for m in MODEL_CATALOG]
+
 
 def get_next_fallback_model(current_model: str) -> str:
-    """
-    Determines the next model in the cascade sequence following the current model.
-    Cycles sequentially through the free pool:
-    Gemini -> Llama -> DeepSeek -> Qwen -> Mistral -> Gemini
-    """
-    if current_model in FREE_MODEL_POOL:
-        idx = FREE_MODEL_POOL.index(current_model)
-        next_idx = (idx + 1) % len(FREE_MODEL_POOL)
-        return FREE_MODEL_POOL[next_idx]
-    return FREE_MODEL_POOL[0]
+    ids = [m["id"] for m in MODEL_CATALOG]
+    if current_model in ids:
+        return ids[(ids.index(current_model) + 1) % len(ids)]
+    return ids[0]
+
+
+def get_server_openrouter_key() -> str:
+    """Legacy helper: arkAI needs NO server key anymore. Always ''."""
+    return ""
+
+
+def resolve_effective_key(client_override_key: str = "") -> str:
+    return (client_override_key or "").strip()
+
+
+def is_demo_mode(api_key: str = "") -> bool:
+    """There is no demo mode anymore - free orchestration always works."""
+    return False
