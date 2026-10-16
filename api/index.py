@@ -97,20 +97,24 @@ for _p in (_current_dir, _parent_dir):
 try:
     from api.config import (
         MODEL_CATALOG, MODEL_REGISTRY, FREE_GATEWAYS,
-        ranked_models_for_intent, detect_provider_from_key,
+        ranked_models_for_intent, detect_provider_from_key, all_models,
     )
     from api.router import classify_prompt_intent, execute_orchestrated_chat, execute_orchestrated_chat_stream
+    from api.patterns import match_intent as match_pattern, list_intents as pattern_intents, intents_count as pattern_intents_count, triggers_count as pattern_triggers_count
+    from api import adaptive as _adaptive
 except ImportError:
     from config import (
         MODEL_CATALOG, MODEL_REGISTRY, FREE_GATEWAYS,
-        ranked_models_for_intent, detect_provider_from_key,
+        ranked_models_for_intent, detect_provider_from_key, all_models,
     )
-    from router import classify_prompt_intent, execute_orchestrated_chat
+    from router import classify_prompt_intent, execute_orchestrated_chat, execute_orchestrated_chat_stream
+    from patterns import match_intent as match_pattern, list_intents as pattern_intents, intents_count as pattern_intents_count, triggers_count as pattern_triggers_count
+    import adaptive as _adaptive
 
 app = FastAPI(
     title="arkAI Orchestrated Chatbot",
     description="Free multi-model orchestration: <2ms heuristic routing across anonymous AI gateways (Pollinations + LLM7), cascade failover, model-hopping Regenerate, optional Own-Key mode. No vendor API required.",
-    version="4.0.0",
+    version="5.0.0",
 )
 
 app.add_middleware(
@@ -139,6 +143,7 @@ class ChatRequest(BaseModel):
     provider: Optional[str] = Field(None, description="Explicit provider for Own-Key mode")
     temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0)
     stream: Optional[bool] = Field(False, description="Stream tokens via SSE")
+    skip_patterns: Optional[bool] = Field(False, description="Internal: set by /regenerate so it always hops to a real AI model")
 
 class RoutePreviewRequest(BaseModel):
     prompt: str = Field(...)
@@ -166,17 +171,20 @@ async def health_check():
         "status": "operational",
         "engine": "arkAI Orchestrated Chatbot",
         "architecture": "Free multi-gateway orchestration (no API key required)",
-        "version": "4.0.0",
+        "version": "5.0.0",
         "api_key_required": False,
         "gateways": {k: {"name": v["name"], "endpoint": v["endpoint"]} for k, v in FREE_GATEWAYS.items()},
-        "models_count": len(MODEL_CATALOG),
-        "models": [m["id"] for m in MODEL_CATALOG],
+        "models_count": len(all_models()),
+        "models": [m["id"] for m in all_models()],
+        "patterns_indexed": pattern_intents_count(),
+        "learning": _adaptive.scoreboard_snapshot(),
         "sla_target_ms": 2.0,
     }
 
 @api_router.get("/models")
 async def get_models():
-    return {"count": len(MODEL_CATALOG), "models": MODEL_CATALOG,
+    models = all_models()
+    return {"count": len(models), "models": models,
             "gateways": list(FREE_GATEWAYS.keys())}
 
 @api_router.post("/route-preview")
@@ -199,10 +207,76 @@ def _format_messages(req) -> List[Dict[str, str]]:
     return msgs
 
 
-def _sse_response(event_source, routing_time_ms: float):
+
+def _pattern_result(query: str, routing_time_ms: float, total_start_ns: int):
+    """Instant local pattern answer, or None. Free mode only."""
+    try:
+        m = match_pattern(query, 85.0)
+    except Exception:
+        return None
+    if not m.get("matched"):
+        return None
+    total_ms = round((time.perf_counter_ns() - total_start_ns) / 1_000_000.0, 2)
+    _, assigned_model, _rt = classify_prompt_intent(query)
+    return {"status": "success", "source": "pattern", "response": m.get("response"),
+            "intent": m.get("intent"), "confidence": m.get("confidence"),
+            "match_type": m.get("match_type"),
+            "follow_up_suggestions": m.get("follow_up_suggestions"),
+            "model_used": "arkai/local-pattern-engine",
+            "model_name": "arkAI Local Pattern Engine",
+            "model_badge": "Instant - On-device", "gateway": "local",
+            "gateway_name": "Local Pattern Engine", "mode": "arkai_free",
+            "provider_status": "success", "failover_count": 0, "failover_history": [],
+            "next_model": assigned_model, "next_model_name": None,
+            "tried_models": ["arkai/local-pattern-engine"],
+            "routing_time_ms": routing_time_ms,
+            "latency_micros": m.get("execution_time_micros"),
+            "total_latency_ms": total_ms, "latency_ms": total_ms}
+
+
+class FeedbackRequest(BaseModel):
+    model_used: str = Field(...)
+    event: str = Field(..., description="up | down | regen")
+    intent: Optional[str] = Field(None)
+
+
+@api_router.post("/feedback")
+async def feedback_endpoint(req: FeedbackRequest):
+    intent = req.intent
+    if intent not in ("code", "math_logic", "creative", "general"):
+        intent = "general"
+    rec = await _adaptive.record_feedback(intent, req.model_used, req.event)
+    return {"status": "recorded", "model_used": req.model_used, "intent": intent, "record": rec}
+
+
+@api_router.get("/patterns")
+async def patterns_endpoint():
+    return {"intents": pattern_intents(), "intents_count": pattern_intents_count(),
+            "triggers_indexed": pattern_triggers_count()}
+
+
+class MatchRequest(BaseModel):
+    message: str = Field(...)
+    fuzzy_threshold: Optional[float] = Field(85.0)
+
+
+@api_router.post("/match")
+async def match_endpoint(req: MatchRequest):
+    return match_pattern(req.message, req.fuzzy_threshold or 85.0)
+
+
+@api_router.get("/learning")
+async def learning_endpoint():
+    snap = _adaptive.scoreboard_snapshot()
+    snap["benched_models"] = _adaptive.breaker_snapshot()
+    return snap
+
+def _sse_response(event_source, routing_time_ms: float, done_extra=None):
     async def gen():
         yield f"data: {json.dumps({'type': 'routing', 'routing_time_ms': routing_time_ms})}\n\n"
         async for event in event_source:
+            if done_extra and isinstance(event, dict) and event.get("type") == "done":
+                event = {**done_extra, **event}
             yield f"data: {json.dumps(event)}\n\n"
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
@@ -215,6 +289,21 @@ async def chat_endpoint(req: ChatRequest):
     query = (req.message or "").strip()
     prompt_type, assigned_model, routing_time_ms = classify_prompt_intent(query)
     exclude = list(req.exclude_models or [])
+    # 0) Instant local pattern engine first (free mode only, never on regenerate)
+    if not req.skip_patterns and not (req.api_key_override or "").strip():
+        pat = _pattern_result(query, routing_time_ms, overall_start_ns)
+        if pat is not None:
+            if req.stream:
+                async def _pat_gen():
+                    yield {"type": "meta", "model_used": pat["model_used"],
+                           "model_name": pat["model_name"], "model_badge": pat["model_badge"],
+                           "gateway": "local", "gateway_name": "Local Pattern Engine",
+                           "mode": "arkai_free", "source": "pattern"}
+                    yield {"type": "delta", "content": pat["response"]}
+                    done_ev = dict(pat); done_ev["type"] = "done"
+                    yield done_ev
+                return _sse_response(_pat_gen(), routing_time_ms)
+            return pat
     if req.force_model:
         # try the forced model first by excluding everything ranked above it is
         # complex; simplest honouring: exclude nothing, orchestrator ranking is
@@ -226,7 +315,8 @@ async def chat_endpoint(req: ChatRequest):
         return _sse_response(execute_orchestrated_chat_stream(
             messages=_format_messages(req), intent=intent, exclude_models=exclude,
             api_key_override=req.api_key_override or "", provider=req.provider or "",
-            system_prompt=req.system_prompt, temperature=req.temperature or 0.7), routing_time_ms)
+            system_prompt=req.system_prompt, temperature=req.temperature or 0.7), routing_time_ms,
+            done_extra={"prompt_type": intent})
     result = await execute_orchestrated_chat(
         messages=_format_messages(req), intent=prompt_type if prompt_type in
         ("code", "math_logic", "creative", "general") else
@@ -269,7 +359,8 @@ async def regenerate_with_next_model(req: RegenerateRequest):
     chat_req = ChatRequest(message=req.message, history=req.history,
                            system_prompt=req.system_prompt, exclude_models=tried,
                            api_key_override=req.api_key_override, provider=req.provider,
-                           temperature=req.temperature, stream=req.stream)
+                           temperature=req.temperature, stream=req.stream,
+                           skip_patterns=True)
     return await chat_endpoint(chat_req)
 
 app.include_router(api_router, prefix="/api")
