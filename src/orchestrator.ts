@@ -84,8 +84,8 @@ export function houseModels(): LogicalModel[] {
   }
   if (HOUSE_KEYS.openrouter) {
     out.push(
-      { id: 'house/openrouter-llama-free', gateway: 'house_openrouter', upstreamModel: 'meta-llama/llama-3.3-70b-instruct:free', name: 'Llama 3.3 70B (OpenRouter Free)', providerFamily: 'Meta (via OpenRouter)', badge: 'House Key · Free', strengths: ['general', 'creative', 'code'] },
-      { id: 'house/openrouter-deepseek-r1-free', gateway: 'house_openrouter', upstreamModel: 'deepseek/deepseek-r1:free', name: 'DeepSeek R1 (OpenRouter Free)', providerFamily: 'DeepSeek (via OpenRouter)', badge: 'House Key · Reasoning', strengths: ['math_logic', 'code'] },
+      { id: 'house/openrouter-free-router', gateway: 'house_openrouter', upstreamModel: 'openrouter/free', name: 'OpenRouter Free Router', providerFamily: 'OpenRouter (auto free pool)', badge: 'House Key · Free', strengths: ['general', 'creative', 'code', 'math_logic'] },
+      { id: 'house/openrouter-nemotron-super', gateway: 'house_openrouter', upstreamModel: 'nvidia/nemotron-3-super-120b-a12b:free', name: 'Nemotron 3 Super 120B (OpenRouter Free)', providerFamily: 'NVIDIA (via OpenRouter)', badge: 'House Key · Reasoning', strengths: ['math_logic', 'code', 'general'] },
     );
   }
   return out;

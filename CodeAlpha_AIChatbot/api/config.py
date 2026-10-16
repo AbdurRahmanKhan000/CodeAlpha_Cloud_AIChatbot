@@ -275,14 +275,14 @@ def house_models() -> List[Dict[str, Any]]:
                             "description": src["description"] + " (Dedicated-quota route via owner's LLM7 key.)"})
     if HOUSE_KEYS["openrouter"]:
         out += [
-            {"id": "house/openrouter-llama-free", "gateway": "house_openrouter", "upstream_model": "meta-llama/llama-3.3-70b-instruct:free",
-             "name": "Llama 3.3 70B (OpenRouter Free)", "provider_family": "Meta (via OpenRouter)", "badge": "House Key · Free",
-             "strengths": ["general", "creative", "code"],
-             "description": "Free Llama 3.3 70B route on OpenRouter via the owner's key."},
-            {"id": "house/openrouter-deepseek-r1-free", "gateway": "house_openrouter", "upstream_model": "deepseek/deepseek-r1:free",
-             "name": "DeepSeek R1 (OpenRouter Free)", "provider_family": "DeepSeek (via OpenRouter)", "badge": "House Key · Reasoning",
-             "strengths": ["math_logic", "code"],
-             "description": "Free DeepSeek R1 reasoning route on OpenRouter via the owner's key."},
+            {"id": "house/openrouter-free-router", "gateway": "house_openrouter", "upstream_model": "openrouter/free",
+             "name": "OpenRouter Free Router", "provider_family": "OpenRouter (auto free pool)", "badge": "House Key · Free",
+             "strengths": ["general", "creative", "code", "math_logic"],
+             "description": "OpenRouter's own free-model router via the owner's key - it picks a live free model per request."},
+            {"id": "house/openrouter-nemotron-super", "gateway": "house_openrouter", "upstream_model": "nvidia/nemotron-3-super-120b-a12b:free",
+             "name": "Nemotron 3 Super 120B (OpenRouter Free)", "provider_family": "NVIDIA (via OpenRouter)", "badge": "House Key · Reasoning",
+             "strengths": ["math_logic", "code", "general"],
+             "description": "Free NVIDIA Nemotron 3 Super 120B route on OpenRouter via the owner's key."},
         ]
     return out
 
